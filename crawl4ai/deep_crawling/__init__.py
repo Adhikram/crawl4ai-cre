@@ -34,6 +34,7 @@ from .cre_filters import (
     build_cre_filter_chain,
     async_build_cre_filter_chain,
     is_bot_challenge_response,
+    retry_if_bot_challenge,
 )
 from .cre_scorers import (
     CREKeywordRelevanceScorer,
@@ -86,6 +87,7 @@ __all__ = [
     "build_cre_filter_chain",
     "async_build_cre_filter_chain",
     "is_bot_challenge_response",
+    "retry_if_bot_challenge",
     # CRE scorers
     "CREKeywordRelevanceScorer",
     "CRENewsDeprioritizationScorer",

@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 import threading
 from functools import lru_cache
-from typing import TYPE_CHECKING, FrozenSet, List, Optional, Set
+from typing import TYPE_CHECKING, Any, FrozenSet, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
 
 from .filters import URLFilter
@@ -809,3 +809,59 @@ def is_bot_challenge_response(result: "CrawlResult") -> bool:
         return True
 
     return False
+
+
+async def retry_if_bot_challenge(
+    result: "CrawlResult",
+    url: str,
+    crawler: Any,
+    base_config: Any,
+    logger: Any = None,
+    retry_delays: Sequence[float] = (2.0, 5.0),
+) -> "CrawlResult":
+    """
+    If *result* is a WAF/bot challenge, retry the URL with increasing delays.
+
+    Mirrors the per-page fallback in ``fetchwebsite.ts``:
+    first retry after 2 s so the Proof-of-Work JS can complete; then after
+    5 s if still challenged.  Each retry reuses the **same** browser context,
+    so any WAF session cookie set on a successful pass persists for all
+    subsequent pages — no global delay is needed.
+
+    Args:
+        result:        The initial :class:`CrawlResult` to inspect.
+        url:           The URL that was crawled.
+        crawler:       The :class:`AsyncWebCrawler` instance.
+        base_config:   The :class:`CrawlerRunConfig` used for the original crawl.
+        logger:        Optional logger; warnings are emitted at WARNING level.
+        retry_delays:  Sequence of per-retry delays in seconds (default: 2 s, 5 s).
+
+    Returns:
+        The first non-challenge result, or the last result when every retry
+        is still a challenge (callers should then skip the page).
+    """
+    for delay in retry_delays:
+        if not is_bot_challenge_response(result):
+            return result
+
+        if logger:
+            logger.warning(
+                f"⚠ Bot/WAF challenge on {url} — retrying with delay={delay}s"
+            )
+
+        retry_config = base_config.clone(
+            deep_crawl_strategy=None,
+            stream=False,
+            delay_before_return_html=delay,
+        )
+        try:
+            retry_results = await crawler.arun_many(urls=[url], config=retry_config)
+            for r in retry_results:
+                result = r
+                break  # single URL → take the first result
+        except Exception as exc:
+            if logger:
+                logger.warning(f"⚠ Retry request failed for {url}: {exc}")
+            return result
+
+    return result

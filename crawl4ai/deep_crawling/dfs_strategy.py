@@ -87,6 +87,24 @@ class DFSDeepCrawlStrategy(BFSDeepCrawlStrategy):
                 
                 # Count only successful crawls toward max_pages limit
                 if result.success:
+                    # CRE: retry bot/WAF challenge pages with increasing delays,
+                    # then skip if still challenged after all retries.
+                    try:
+                        from .cre_filters import is_bot_challenge_response, retry_if_bot_challenge
+                        if is_bot_challenge_response(result):
+                            result = await retry_if_bot_challenge(
+                                result, url, crawler, batch_config, self.logger
+                            )
+                            results[-1] = result  # replace in output list
+                        if is_bot_challenge_response(result):
+                            self.logger.warning(
+                                f"⚠ Bot/WAF challenge on {url} persists after retries "
+                                f"(status={result.status_code}) — skipping link discovery"
+                            )
+                            continue
+                    except ImportError:
+                        pass
+
                     self._pages_crawled += 1
                     self.logger.info(
                         f"[{self._pages_crawled}/{self.max_pages}] ✅ depth={depth} {url}"
@@ -193,11 +211,30 @@ class DFSDeepCrawlStrategy(BFSDeepCrawlStrategy):
                 result.metadata["parent_url"] = parent
                 if self.url_scorer:
                     result.metadata["score"] = self.url_scorer.score(url)
+
+                # CRE: retry bot/WAF challenge pages with increasing delays,
+                # then skip if still challenged after all retries.
+                _is_challenge = False
+                if result.success:
+                    try:
+                        from .cre_filters import is_bot_challenge_response, retry_if_bot_challenge
+                        if is_bot_challenge_response(result):
+                            result = await retry_if_bot_challenge(
+                                result, url, crawler, stream_config, self.logger
+                            )
+                        if is_bot_challenge_response(result):
+                            self.logger.warning(
+                                f"⚠ Bot/WAF challenge on {url} persists after retries "
+                                f"(status={result.status_code}) — skipping link discovery"
+                            )
+                            _is_challenge = True
+                    except ImportError:
+                        pass
+
                 yield result
 
-                # Only count successful crawls toward max_pages limit
-                # and only discover links from successful crawls
-                if result.success:
+                # Only count successful, non-challenge crawls toward max_pages limit
+                if result.success and not _is_challenge:
                     self._pages_crawled += 1
                     self.logger.info(
                         f"[{self._pages_crawled}/{self.max_pages}] ✅ depth={depth} {url}"

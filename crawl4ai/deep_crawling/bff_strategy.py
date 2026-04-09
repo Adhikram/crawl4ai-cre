@@ -341,14 +341,19 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
                 result.metadata["parent_url"] = parent_url
                 result.metadata["score"] = -score
                 
-                # CRE: detect bot/WAF challenge pages before counting or discovering links
+                # CRE: retry bot/WAF challenge pages with increasing delays,
+                # then skip if still challenged after all retries.
                 _is_challenge = False
                 if result.success:
                     try:
-                        from .cre_filters import is_bot_challenge_response
+                        from .cre_filters import is_bot_challenge_response, retry_if_bot_challenge
+                        if is_bot_challenge_response(result):
+                            result = await retry_if_bot_challenge(
+                                result, result_url, crawler, batch_config, self.logger
+                            )
                         if is_bot_challenge_response(result):
                             self.logger.warning(
-                                f"⚠ Bot/WAF challenge detected on {result_url} "
+                                f"⚠ Bot/WAF challenge on {result_url} persists after retries "
                                 f"(status={result.status_code}) — skipping link discovery"
                             )
                             _is_challenge = True

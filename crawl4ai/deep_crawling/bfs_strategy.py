@@ -332,13 +332,18 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
 
                 # Only discover links from successful crawls
                 if result.success:
-                    # CRE: skip bot/WAF challenge pages — they contain no real links
-                    # and must not count toward the page budget.
+                    # CRE: retry bot/WAF challenge pages with increasing delays,
+                    # then skip if still challenged after all retries.
                     try:
-                        from .cre_filters import is_bot_challenge_response
+                        from .cre_filters import is_bot_challenge_response, retry_if_bot_challenge
+                        if is_bot_challenge_response(result):
+                            result = await retry_if_bot_challenge(
+                                result, url, crawler, batch_config, self.logger
+                            )
+                            results[-1] = result  # replace in output list
                         if is_bot_challenge_response(result):
                             self.logger.warning(
-                                f"⚠ Bot/WAF challenge detected on {url} "
+                                f"⚠ Bot/WAF challenge on {url} persists after retries "
                                 f"(status={result.status_code}) — skipping link discovery"
                             )
                             continue
@@ -438,14 +443,19 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
                 parent_url = next((parent for (u, parent) in current_level if u == url), None)
                 result.metadata["parent_url"] = parent_url
                 
-                # CRE: detect bot/WAF challenge pages before counting or discovering links
+                # CRE: retry bot/WAF challenge pages with increasing delays,
+                # then skip if still challenged after all retries.
                 _is_challenge = False
                 if result.success:
                     try:
-                        from .cre_filters import is_bot_challenge_response
+                        from .cre_filters import is_bot_challenge_response, retry_if_bot_challenge
+                        if is_bot_challenge_response(result):
+                            result = await retry_if_bot_challenge(
+                                result, url, crawler, stream_config, self.logger
+                            )
                         if is_bot_challenge_response(result):
                             self.logger.warning(
-                                f"⚠ Bot/WAF challenge detected on {url} "
+                                f"⚠ Bot/WAF challenge on {url} persists after retries "
                                 f"(status={result.status_code}) — skipping link discovery"
                             )
                             _is_challenge = True

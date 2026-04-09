@@ -1377,14 +1377,10 @@ Always return valid, properly formatted JSON."""
             # Use domcontentloaded (same as TS) NOT networkidle.
             # networkidle fires during the 500ms gap between the challenge page
             # loading and the PoW workers submitting — i.e. before the redirect.
-            # A 5-second explicit sleep (delay_before_return_html) mirrors
-            # fetchwebsite.ts line 3547: `await page.waitForTimeout(5000)`.
-            # By then the PoW workers have finished, the JS redirect has fired,
-            # the server has set the WAF cookie, and the real page is loaded.
+            # Per-page retry in the crawl strategies (2 s → 5 s) handles the
+            # PoW delay automatically, so no global delay is needed here.
             if crawler_cfg.wait_until != "domcontentloaded":
                 crawler_cfg = crawler_cfg.clone(wait_until="domcontentloaded")
-            if crawler_cfg.delay_before_return_html <= 0.1:
-                crawler_cfg = crawler_cfg.clone(delay_before_return_html=2.0)
             # Give the full redirect chain enough headroom.
             from crawl4ai.config import PAGE_TIMEOUT as _PAGE_TIMEOUT
             if crawler_cfg.page_timeout <= _PAGE_TIMEOUT:
@@ -1395,7 +1391,7 @@ Always return valid, properly formatted JSON."""
                     "enable_stealth=True, simulate_user=True, "
                     "user_agent_mode=random, --enable-cookies, "
                     "wait_until=domcontentloaded, "
-                    "delay_before_return_html=6 s, page_timeout=90 s"
+                    "per-page retry (2 s → 5 s), page_timeout=90 s"
                 )
 
         config = get_global_config()
