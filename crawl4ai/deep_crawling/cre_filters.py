@@ -56,7 +56,7 @@ _EXCLUDED_PATHS: FrozenSet[str] = frozenset([
     "/ajax", "/ajax/", "/xhr", "/xhr/",
     "/embed", "/embed/", "/widget", "/widget/",
     "/track", "/track/", "/analytics", "/stats", "/public/",
-    "/private/", "/secure/", "/protected/",
+    "/private/", "/secure/", "/protected/", "/blog",
     "/.well-known", "/robots.txt", "/favicon.ico",
     "/sitemap.xml", "/sitemap_index.xml",
 ])

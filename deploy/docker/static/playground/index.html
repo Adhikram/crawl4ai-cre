@@ -191,6 +191,7 @@
                 <select id="endpoint" class="ml-auto bg-dark border border-border rounded px-2 py-1 text-sm">
                     <option value="crawl">/crawl (batch)</option>
                     <option value="crawl_stream">/crawl/stream</option>
+                    <option value="crawl_cre">/crawl/cre (CRE Deep Crawl) ✦</option>
                     <option value="md">/md</option>
                     <option value="llm">/llm</option>
                 </select>
@@ -236,6 +237,69 @@
                             <label for="llm-question" class="block text-xs text-secondary mb-1">Question</label>
                             <input id="llm-question" type="text" value="What is this page about?" 
                                 class="bg-dark border border-border rounded px-2 py-1 text-sm w-full">
+                        </div>
+                    </div>
+                </details>
+
+                <!-- CRE Deep Crawl options -->
+                <details id="cre-options" class="mb-4 hidden">
+                    <summary class="text-sm cursor-pointer flex items-center gap-2" style="color:#4EFFFF;">
+                        CRE Deep Crawl Options
+                        <span class="text-xs px-1.5 py-0.5 rounded" style="background:#4EFFFF22;color:#4EFFFF;border:1px solid #4EFFFF44;">--cre ON</span>
+                        <span class="text-xs px-1.5 py-0.5 rounded" style="background:#F380F522;color:#F380F5;border:1px solid #F380F544;">--deep-crawl</span>
+                    </summary>
+                    <div class="mt-3 space-y-3 p-3 border border-border rounded">
+
+                        <!-- Row 1: Strategy + Max Pages + Max Depth -->
+                        <div class="grid grid-cols-3 gap-3">
+                            <div>
+                                <label for="cre-strategy" class="block text-xs text-secondary mb-1">
+                                    --deep-crawl <span class="text-primary">Strategy</span>
+                                </label>
+                                <select id="cre-strategy" class="bg-dark border border-border rounded px-2 py-1 text-sm w-full">
+                                    <option value="dfs">dfs — Depth-First</option>
+                                    <option value="bfs">bfs — Breadth-First</option>
+                                    <option value="best-first">best-first — Scored</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="cre-max-pages" class="block text-xs text-secondary mb-1">
+                                    --max-pages <span class="text-primary">(default 500)</span>
+                                </label>
+                                <input id="cre-max-pages" type="number" value="500" min="1" max="5000"
+                                    class="bg-dark border border-border rounded px-2 py-1 text-sm w-full">
+                            </div>
+                            <div>
+                                <label for="cre-max-depth" class="block text-xs text-secondary mb-1">
+                                    --max-depth <span class="text-primary">(default 10)</span>
+                                </label>
+                                <input id="cre-max-depth" type="number" value="10" min="1" max="20"
+                                    class="bg-dark border border-border rounded px-2 py-1 text-sm w-full">
+                            </div>
+                        </div>
+
+                        <!-- Row 2: Toggles -->
+                        <div class="flex flex-wrap gap-5 pt-1">
+                            <label class="flex items-center text-xs cursor-pointer gap-2">
+                                <input id="cre-include-news" type="checkbox" class="accent-primary">
+                                <span>--include-news <span class="text-secondary">(allow blog/press pages)</span></span>
+                            </label>
+                            <label class="flex items-center text-xs cursor-pointer gap-2">
+                                <input id="cre-no-html" type="checkbox" checked class="accent-primary">
+                                <span>--no-html <span class="text-secondary">(strip raw HTML)</span></span>
+                            </label>
+                            <label class="flex items-center text-xs cursor-pointer gap-2">
+                                <input id="cre-stream" type="checkbox" class="accent-primary">
+                                <span>Stream NDJSON <span class="text-secondary">(/crawl/cre/stream)</span></span>
+                            </label>
+                        </div>
+
+                        <!-- CRE auto-applied notice -->
+                        <div class="text-xs rounded px-2 py-1.5 mt-1" style="background:#4EFFFF11;border:1px solid #4EFFFF33;color:#9ee;">
+                            <strong style="color:#4EFFFF;">--cre</strong> auto-applies:
+                            stealth browser · random UA · cookie flags · domcontentloaded timing ·
+                            CREValidPage → CREDomainScoping → CRENewsThreshold filters ·
+                            keyword (40%) + news-deprioritize (30%) + page-type (30%) scorer
                         </div>
                     </div>
                 </details>
@@ -489,26 +553,27 @@
         // Handle endpoint selection change to show appropriate options
         document.getElementById('endpoint').addEventListener('change', function(e) {
             const endpoint = e.target.value;
-            const mdOptions = document.getElementById('md-options');
+            const mdOptions  = document.getElementById('md-options');
             const llmOptions = document.getElementById('llm-options');
-            const advConfig = document.getElementById('adv-config');
+            const creOptions = document.getElementById('cre-options');
+            const advConfig  = document.getElementById('adv-config');
             
-            // Hide all option sections first
+            // Hide all panels first
             mdOptions.classList.add('hidden');
             llmOptions.classList.add('hidden');
+            creOptions.classList.add('hidden');
             advConfig.classList.add('hidden');
             
-            // Show the appropriate section based on endpoint
             if (endpoint === 'md') {
                 mdOptions.classList.remove('hidden');
-                // Auto-open the /md options
                 mdOptions.setAttribute('open', '');
             } else if (endpoint === 'llm') {
                 llmOptions.classList.remove('hidden');
-                // Auto-open the /llm options
                 llmOptions.setAttribute('open', '');
+            } else if (endpoint === 'crawl_cre') {
+                creOptions.classList.remove('hidden');
+                creOptions.setAttribute('open', '');
             } else {
-                // For /crawl endpoints, show the advanced config
                 advConfig.classList.remove('hidden');
             }
         });
@@ -643,7 +708,8 @@
 
             const endpointMap = {
                 crawl: '/crawl',
-                crawl_stream: '/crawl/stream', // Keep for backward compatibility
+                crawl_stream: '/crawl/stream',
+                crawl_cre: '/crawl/cre',
                 md: '/md',
                 llm: '/llm'
             };
@@ -653,28 +719,28 @@
             
             // Create appropriate payload based on endpoint type
             if (endpoint === 'md') {
-                // Get values from the /md specific inputs
                 const filterType = document.getElementById('md-filter').value;
                 const query = document.getElementById('md-query').value.trim();
                 const cache = document.getElementById('md-cache').value;
-                
-                // MD endpoint expects: { url, f, q, c }
                 payload = {
-                    url: urls[0], // Take first URL
-                    f: filterType, // Lowercase filter type as required by server
-                    q: query || null, // Use the query if provided, otherwise null
+                    url: urls[0],
+                    f: filterType,
+                    q: query || null,
                     c: cache
                 };
             } else if (endpoint === 'llm') {
-                // LLM endpoint has a different URL pattern and uses query params
-                // This will be handled directly in the fetch below
                 payload = null;
-            } else {
-                // Default payload for /crawl (supports both streaming and batch modes)
+            } else if (endpoint === 'crawl_cre') {
                 payload = {
-                    urls,
-                    ...advConfig
+                    url: urls[0],
+                    strategy:     document.getElementById('cre-strategy').value,
+                    max_pages:    parseInt(document.getElementById('cre-max-pages').value),
+                    max_depth:    parseInt(document.getElementById('cre-max-depth').value),
+                    include_news: document.getElementById('cre-include-news').checked,
+                    no_html:      document.getElementById('cre-no-html').checked,
                 };
+            } else {
+                payload = { urls, ...advConfig };
             }
 
             updateStatus('processing');
@@ -683,8 +749,45 @@
                 const startTime = performance.now();
                 let response, responseData;
                 const useStreamOverride = (endpoint === 'crawl') && shouldUseStream(payload);
+                const useCREStream = (endpoint === 'crawl_cre') && document.getElementById('cre-stream').checked;
 
-                if (endpoint === 'llm') {
+                if (endpoint === 'crawl_cre' && useCREStream) {
+                    // CRE streaming — /crawl/cre/stream returns NDJSON
+                    response = await fetch('/crawl/cre/stream', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const reader = response.body.getReader();
+                    const pages = [];
+                    let streamText = '';
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        const chunk = new TextDecoder().decode(value);
+                        streamText += chunk;
+                        chunk.trim().split('\n').forEach(line => {
+                            if (!line) return;
+                            try {
+                                const obj = JSON.parse(line);
+                                if (!obj.status) pages.push(obj);
+                            } catch (e) {}
+                        });
+                    }
+
+                    const time = Math.round(performance.now() - startTime);
+                    updateStatus('success', time);
+                    document.getElementById('exec-time').textContent = `${time}ms`;
+                    // Show all pages as a JSON array in the response viewer
+                    const display = { streamed_pages: pages.length, results: pages };
+                    document.querySelector('#response-content code').textContent = JSON.stringify(display, null, 2);
+                    document.querySelector('#response-content code').className = 'json hljs';
+                    forceHighlightElement(document.querySelector('#response-content code'));
+                    generateSnippets('/crawl/cre/stream', payload);
+
+                } else if (endpoint === 'llm') {
                     // Special handling for LLM endpoint which uses URL pattern: /llm/{encoded_url}?q={query}
                     const url = urls[0];
                     const encodedUrl = encodeURIComponent(url);
@@ -767,21 +870,25 @@
                         responseData.server_peak_memory_mb
                     );
 
+                    // Show total_pages in status bar for CRE crawls
+                    if (endpoint === 'crawl_cre' && responseData.total_pages !== undefined) {
+                        const timeEl = document.getElementById('exec-time');
+                        timeEl.textContent = `${time}ms — ${responseData.total_pages} pages crawled`;
+                    }
+
                     document.querySelector('#response-content code').textContent = JSON.stringify(responseData, null, 2);
-                    document.querySelector('#response-content code').className = 'json hljs'; // Ensure class is set
+                    document.querySelector('#response-content code').className = 'json hljs';
                     forceHighlightElement(document.querySelector('#response-content code'));
                 }
 
                 forceHighlightElement(document.querySelector('#response-content code'));
                 
-                // For generateSnippets, handle the LLM case specially
                 if (endpoint === 'llm') {
                     const url = urls[0];
                     const encodedUrl = encodeURIComponent(url);
                     const question = document.getElementById('llm-question').value.trim() || "What is this page about?";
                     generateSnippets(`${api}/${encodedUrl}?q=${encodeURIComponent(question)}`, null, 'GET');
-                } else {
-                    // Use the same API endpoint for both streaming and non-streaming
+                } else if (!useCREStream) {
                     generateSnippets(api, payload);
                 }
             } catch (error) {
