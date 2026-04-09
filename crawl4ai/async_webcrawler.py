@@ -427,58 +427,6 @@ class AsyncWebCrawler:
                     # proxy retries, and fallback fetching are meaningless here.
                     _is_raw_url = url.startswith("raw:") or url.startswith("raw://")
 
-                    # --- PDF short-circuit ---
-                    # When a URL clearly points to a PDF document, skip Playwright
-                    # entirely and use PDFContentScrapingStrategy to download and
-                    # parse the file directly.  This is triggered when:
-                    #   • the URL path ends with .pdf (case-insensitive), AND
-                    #   • the caller hasn't already set a custom scraping_strategy
-                    #     (so explicit overrides are respected).
-                    from .processors.pdf import PDFContentScrapingStrategy as _PDFScraper
-                    _is_pdf_url = (
-                        not _is_raw_url
-                        and url.lower().split("?")[0].split("#")[0].endswith(".pdf")
-                        and not isinstance(
-                            getattr(config, "scraping_strategy", None), _PDFScraper
-                        )
-                    )
-                    if _is_pdf_url:
-                        _pdf_config = config.clone()
-                        _pdf_config.scraping_strategy = _PDFScraper()
-                        try:
-                            self.logger.info(
-                                message="PDF detected — processing directly: {url}",
-                                tag="PDF",
-                                params={"url": url[:120]},
-                            )
-                            crawl_result = await self.aprocess_html(
-                                url=url,
-                                html="",
-                                extracted_content=None,
-                                config=_pdf_config,
-                                screenshot_data=None,
-                                pdf_data=None,
-                                verbose=config.verbose,
-                            )
-                            crawl_result.status_code = 200
-                            crawl_result.cache_status = "miss"
-                        except Exception as _pdf_err:
-                            crawl_result = CrawlResult(
-                                url=url,
-                                html="",
-                                success=False,
-                                error_message=f"PDF processing failed: {_pdf_err}",
-                            )
-                        if cache_context.should_write() and crawl_result.success:
-                            await async_db_manager.acache_url(crawl_result)
-                        self.logger.url_status(
-                            url=cache_context.display_url,
-                            success=crawl_result.success,
-                            timing=time.perf_counter() - start_time,
-                            tag="COMPLETE",
-                        )
-                        return CrawlResultContainer(crawl_result)
-
                     _max_attempts = 1 + getattr(config, "max_retries", 0)
                     _proxy_list = config._get_proxy_list()
                     _original_proxy_config = config.proxy_config

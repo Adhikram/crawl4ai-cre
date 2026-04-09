@@ -803,6 +803,70 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                     "after_goto", page, context=context, url=url, response=response, config=config
                 )
 
+                # ── PDF document interception ──────────────────────────────
+                # When Playwright navigates to a .pdf URL, Chrome opens its
+                # built-in PDF viewer and page.content() returns viewer HTML
+                # with no text.  Instead, grab the raw bytes from the last
+                # response and convert them to readable HTML via pypdf so
+                # that the markdown generator produces useful output.
+                # This runs AFTER the bot-challenge redirect chain so the
+                # browser session cookies have already been applied.
+                _final_ct = response_headers.get("content-type", "").lower() if response_headers else ""
+                _url_is_pdf = url.lower().split("?")[0].split("#")[0].endswith(".pdf")
+                if ("application/pdf" in _final_ct or _url_is_pdf) and response is not None:
+                    try:
+                        import asyncio as _asyncio
+                        import tempfile as _tempfile
+                        from pathlib import Path as _Path
+                        from .processors.pdf.processor import NaivePDFProcessorStrategy as _NaivePDF
+
+                        pdf_bytes = await response.body()
+                        # Sanity-check: real PDFs start with %PDF, not HTML
+                        if pdf_bytes and pdf_bytes[:4] == b"%PDF":
+                            self.logger.info(
+                                message="PDF document detected ({size} bytes) — extracting text for {url}",
+                                tag="PDF",
+                                params={"size": len(pdf_bytes), "url": url[:100]},
+                            )
+                            with _tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as _tf:
+                                _tf.write(pdf_bytes)
+                                _tmp_pdf = _tf.name
+                            try:
+                                _pdf_strategy = _NaivePDF(extract_images=False)
+                                _pdf_result = await _asyncio.to_thread(
+                                    _pdf_strategy.process_batch, _Path(_tmp_pdf)
+                                )
+                                html = (
+                                    f'<html><head><meta name="pdf-pages"'
+                                    f' content="{len(_pdf_result.pages)}"></head><body>'
+                                    + "".join(
+                                        f'<div class="pdf-page" data-page="{i+1}">'
+                                        f"{page.html}</div>"
+                                        for i, page in enumerate(_pdf_result.pages)
+                                    )
+                                    + "</body></html>"
+                                )
+                                status_code = 200
+                                response_headers = {"content-type": "text/html"}
+                            finally:
+                                _Path(_tmp_pdf).unlink(missing_ok=True)
+                        else:
+                            self.logger.warning(
+                                message="PDF URL returned non-PDF bytes (len={size}, header={hdr!r}) — skipping text extraction",
+                                tag="PDF",
+                                params={
+                                    "size": len(pdf_bytes) if pdf_bytes else 0,
+                                    "hdr": (pdf_bytes[:8] if pdf_bytes else b""),
+                                },
+                            )
+                    except Exception as _pdf_err:
+                        self.logger.warning(
+                            message="PDF text extraction failed for {url}: {err}",
+                            tag="PDF",
+                            params={"url": url[:100], "err": str(_pdf_err)},
+                        )
+                # ── end PDF interception ───────────────────────────────────
+
             else:
                 status_code = 200
                 response_headers = {}
