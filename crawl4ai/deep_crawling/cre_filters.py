@@ -28,10 +28,13 @@ from __future__ import annotations
 import re
 import threading
 from functools import lru_cache
-from typing import FrozenSet, List, Optional, Set
+from typing import TYPE_CHECKING, FrozenSet, List, Optional, Set
 from urllib.parse import urlparse
 
 from .filters import URLFilter
+
+if TYPE_CHECKING:
+    from ..types import CrawlResult
 
 
 # ---------------------------------------------------------------------------
@@ -710,3 +713,99 @@ class CRENewsThresholdFilter(URLFilter):
         result = not self._is_news(url)
         self._update_stats(result)
         return result
+
+
+# ---------------------------------------------------------------------------
+# 7. Bot / WAF challenge detection
+# ---------------------------------------------------------------------------
+
+# URL path fragments that appear in WAF challenge redirect targets
+_CHALLENGE_URL_PATTERNS: FrozenSet[str] = frozenset([
+    "sgcaptcha",         # Stackpath Shield
+    "/.well-known/captcha",
+    "cdn-cgi/challenge", # Cloudflare
+    "cdn-cgi/l/chk_",
+    "/__cf_chl",
+    "/_Incapsula_Resource",  # Imperva / Incapsula
+    "/distil_r_captcha",     # Distil Networks
+])
+
+# HTTP response-header key/value pairs that definitively identify a challenge
+_CHALLENGE_HEADERS: List[tuple] = [
+    ("sg-captcha", "challenge"),      # Stackpath Shield
+    ("cf-mitigated", "challenge"),    # Cloudflare
+    ("x-sucuri-cache", ""),           # Sucuri — presence alone is enough
+]
+
+# HTML <title> strings served by WAF challenge pages
+_CHALLENGE_TITLES: FrozenSet[str] = frozenset([
+    "robot challenge screen",
+    "just a moment...",      # Cloudflare
+    "access denied",
+    "attention required",    # Cloudflare
+    "checking your browser", # various
+    "one moment, please",    # Cloudflare
+    "ddos protection",
+    "security check",
+    "please wait",
+])
+
+
+def is_bot_challenge_response(result: "CrawlResult") -> bool:
+    """
+    Return True when *result* is a WAF / bot-protection challenge page rather
+    than real site content.
+
+    Detects the following WAF vendors:
+      * **Stackpath Shield** — ``sg-captcha: challenge`` header;
+        ``redirected_url`` containing ``sgcaptcha`` or ``/.well-known/captcha``.
+      * **Cloudflare** — ``cf-mitigated: challenge`` header;
+        ``redirected_url`` containing ``cdn-cgi/challenge`` or ``/__cf_chl``.
+      * **Imperva / Incapsula** — redirect URL containing
+        ``/_Incapsula_Resource`` or ``/distil_r_captcha``.
+      * **Generic** — HTTP 202 + ``x-robots-tag: noindex`` (common WAF
+        pattern), or a known challenge ``<title>``.
+
+    This function is intentionally **read-only** — it never mutates *result*.
+    Callers (crawl strategies) use it to decide whether to skip link discovery
+    and page-count tracking for the offending result.
+
+    Args:
+        result: A :class:`~crawl4ai.types.CrawlResult` from any crawl strategy.
+
+    Returns:
+        True if the response is a WAF/bot challenge, False otherwise.
+
+    Example::
+
+        if is_bot_challenge_response(result):
+            logger.warning("Bot challenge detected on %s — skipping", result.url)
+            continue
+    """
+    headers: dict = result.response_headers or {}
+    headers_lower = {k.lower(): v.lower() for k, v in headers.items()}
+
+    # 1. Known challenge response-header key/value pairs
+    for key, value in _CHALLENGE_HEADERS:
+        header_val = headers_lower.get(key.lower(), "")
+        if value == "" and header_val:
+            # Presence-only check (e.g. x-sucuri-cache)
+            return True
+        if value and header_val == value.lower():
+            return True
+
+    # 2. Challenge URL patterns in the redirect target
+    redirected = (result.redirected_url or "").lower()
+    if redirected and any(pat in redirected for pat in _CHALLENGE_URL_PATTERNS):
+        return True
+
+    # 3. HTTP 202 + x-robots-tag: noindex  (Stackpath pattern)
+    if result.status_code == 202 and "noindex" in headers_lower.get("x-robots-tag", ""):
+        return True
+
+    # 4. HTML <title> check (last-resort, cheapest string comparison)
+    title = ((result.metadata or {}).get("title") or "").lower().strip()
+    if title in _CHALLENGE_TITLES:
+        return True
+
+    return False

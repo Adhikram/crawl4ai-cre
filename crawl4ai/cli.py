@@ -1336,8 +1336,70 @@ Always return valid, properly formatted JSON."""
                     f"max_depth={max_depth}, max_pages={max_pages}"
                 )
 
+        # CRE: apply anti-bot browser defaults when --cre is active.
+        #
+        # Many CRE sites sit behind WAFs (Stackpath Shield, Cloudflare, Imperva)
+        # that serve Proof-of-Work JS challenge pages to headless browsers.
+        #
+        # The root problem is a 3-stage timing issue:
+        #   1. page.goto() fires 'domcontentloaded' when the CHALLENGE page loads
+        #   2. Playwright captures HTML immediately (challenge page, no real links)
+        #   3. The PoW workers finish ~0.5s later and redirect to the real page —
+        #      but the crawl has already captured the wrong content.
+        #
+        # Fix: wait_until="networkidle" makes page.goto() block until ALL network
+        # activity settles, which includes:
+        #   challenge page → JS redirect → /.well-known/sgcaptcha/?sol=…
+        #   → server sets cookie → 302 redirect → real page fully loaded
+        # Only then does goto() return and the content is captured.
+        #
+        # Attribute locations:
+        #   BrowserConfig    → user_agent_mode (default ""), enable_stealth
+        #   CrawlerRunConfig → simulate_user, wait_until, page_timeout
+        if cre_scoring:
+            # ── Browser-level: stealth + cookies ──────────────────────────
+            if not browser_cfg.user_agent_mode:
+                browser_cfg = browser_cfg.clone(user_agent_mode="random")
+            if not browser_cfg.enable_stealth:
+                browser_cfg = browser_cfg.clone(enable_stealth=True)
+            # Mirror browser-pool-manager.ts lines 210-211: explicitly enable
+            # cookies and disable encryption so the WAF session cookie set after
+            # the PoW redirect is readable and sent on every subsequent request.
+            _cre_extra_args = list(browser_cfg.extra_args or [])
+            for _flag in ("--enable-cookies", "--disable-cookie-encryption"):
+                if _flag not in _cre_extra_args:
+                    _cre_extra_args.append(_flag)
+            browser_cfg = browser_cfg.clone(extra_args=_cre_extra_args)
+
+            # ── Crawler-level: timing mirrors fetchwebsite.ts ─────────────
+            if not crawler_cfg.simulate_user:
+                crawler_cfg = crawler_cfg.clone(simulate_user=True)
+            # Use domcontentloaded (same as TS) NOT networkidle.
+            # networkidle fires during the 500ms gap between the challenge page
+            # loading and the PoW workers submitting — i.e. before the redirect.
+            # A 5-second explicit sleep (delay_before_return_html) mirrors
+            # fetchwebsite.ts line 3547: `await page.waitForTimeout(5000)`.
+            # By then the PoW workers have finished, the JS redirect has fired,
+            # the server has set the WAF cookie, and the real page is loaded.
+            if crawler_cfg.wait_until != "domcontentloaded":
+                crawler_cfg = crawler_cfg.clone(wait_until="domcontentloaded")
+            if crawler_cfg.delay_before_return_html <= 0.1:
+                crawler_cfg = crawler_cfg.clone(delay_before_return_html=2.0)
+            # Give the full redirect chain enough headroom.
+            from crawl4ai.config import PAGE_TIMEOUT as _PAGE_TIMEOUT
+            if crawler_cfg.page_timeout <= _PAGE_TIMEOUT:
+                crawler_cfg = crawler_cfg.clone(page_timeout=90_000)
+            if verbose:
+                console.print(
+                    "[cyan]CRE anti-bot defaults applied:[/cyan] "
+                    "enable_stealth=True, simulate_user=True, "
+                    "user_agent_mode=random, --enable-cookies, "
+                    "wait_until=domcontentloaded, "
+                    "delay_before_return_html=6 s, page_timeout=90 s"
+                )
+
         config = get_global_config()
-        
+
         browser_cfg.verbose = config.get("VERBOSE", False)
         crawler_cfg.verbose = config.get("VERBOSE", False)
 

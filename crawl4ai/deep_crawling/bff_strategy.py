@@ -341,8 +341,22 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
                 result.metadata["parent_url"] = parent_url
                 result.metadata["score"] = -score
                 
-                # Count only successful crawls toward max_pages limit
+                # CRE: detect bot/WAF challenge pages before counting or discovering links
+                _is_challenge = False
                 if result.success:
+                    try:
+                        from .cre_filters import is_bot_challenge_response
+                        if is_bot_challenge_response(result):
+                            self.logger.warning(
+                                f"⚠ Bot/WAF challenge detected on {result_url} "
+                                f"(status={result.status_code}) — skipping link discovery"
+                            )
+                            _is_challenge = True
+                    except ImportError:
+                        pass
+
+                # Count only successful, non-challenge crawls toward max_pages limit
+                if result.success and not _is_challenge:
                     self._pages_crawled += 1
                     self.logger.info(
                         f"[{self._pages_crawled}/{self.max_pages}] ✅ score={-score:.2f} depth={depth} {url}"
@@ -353,11 +367,11 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
                     if self._pages_crawled >= self.max_pages:
                         self.logger.info(f"Max pages limit ({self.max_pages}) reached during batch, stopping crawl")
                         break  # Exit the generator
-                
+
                 yield result
-                
-                # Only discover links from successful crawls
-                if result.success:
+
+                # Only discover links from successful, non-challenge crawls
+                if result.success and not _is_challenge:
                     # Discover new links from this result
                     new_links: List[Tuple[str, Optional[str]]] = []
                     await self.link_discovery(result, result_url, depth, visited, new_links, depths)

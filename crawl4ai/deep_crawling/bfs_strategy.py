@@ -332,6 +332,19 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
 
                 # Only discover links from successful crawls
                 if result.success:
+                    # CRE: skip bot/WAF challenge pages — they contain no real links
+                    # and must not count toward the page budget.
+                    try:
+                        from .cre_filters import is_bot_challenge_response
+                        if is_bot_challenge_response(result):
+                            self.logger.warning(
+                                f"⚠ Bot/WAF challenge detected on {url} "
+                                f"(status={result.status_code}) — skipping link discovery"
+                            )
+                            continue
+                    except ImportError:
+                        pass
+
                     # Increment pages crawled per URL for accurate state tracking
                     self._pages_crawled += 1
                     self.logger.info(
@@ -425,19 +438,33 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
                 parent_url = next((parent for (u, parent) in current_level if u == url), None)
                 result.metadata["parent_url"] = parent_url
                 
-                # Count only successful crawls
+                # CRE: detect bot/WAF challenge pages before counting or discovering links
+                _is_challenge = False
                 if result.success:
+                    try:
+                        from .cre_filters import is_bot_challenge_response
+                        if is_bot_challenge_response(result):
+                            self.logger.warning(
+                                f"⚠ Bot/WAF challenge detected on {url} "
+                                f"(status={result.status_code}) — skipping link discovery"
+                            )
+                            _is_challenge = True
+                    except ImportError:
+                        pass
+
+                # Count only successful, non-challenge crawls
+                if result.success and not _is_challenge:
                     self._pages_crawled += 1
                     # Check if we've reached the limit during batch processing
                     if self._pages_crawled >= self.max_pages:
                         self.logger.info(f"Max pages limit ({self.max_pages}) reached during batch, stopping crawl")
                         break  # Exit the generator
-                
+
                 results_count += 1
                 yield result
-                
-                # Only discover links from successful crawls
-                if result.success:
+
+                # Only discover links from successful, non-challenge crawls
+                if result.success and not _is_challenge:
                     # CRE: update stateful news-threshold filter counter
                     self._notify_threshold_filters(url)
 
