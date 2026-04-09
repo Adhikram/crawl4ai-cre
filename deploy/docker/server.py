@@ -809,7 +809,7 @@ async def crawl_cre_stream(
                         from base64 import b64encode
                         d["pdf"] = b64encode(d["pdf"]).decode()
                     if no_html:
-                        for k in ("html", "cleaned_html"):
+                        for k in ("html", "cleaned_html", "fit_html"):
                             d.pop(k, None)
                         md = d.get("markdown")
                         if isinstance(md, dict):

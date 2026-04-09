@@ -939,7 +939,7 @@ def _build_cre_configs(
 
 def _strip_html(result_dict: dict) -> dict:
     """Remove raw HTML fields to reduce payload size."""
-    for key in ("html", "cleaned_html"):
+    for key in ("html", "cleaned_html", "fit_html"):
         result_dict.pop(key, None)
     md = result_dict.get("markdown")
     if isinstance(md, dict):
