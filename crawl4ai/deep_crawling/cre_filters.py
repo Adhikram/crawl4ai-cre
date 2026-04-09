@@ -758,7 +758,9 @@ def is_bot_challenge_response(result: "CrawlResult") -> bool:
 
     Detects the following WAF vendors:
       * **Stackpath Shield** — ``sg-captcha: challenge`` header;
-        ``redirected_url`` containing ``sgcaptcha`` or ``/.well-known/captcha``.
+        ``redirected_url`` containing ``sgcaptcha`` or ``/.well-known/captcha``;
+        or ``sgcaptcha`` found in the raw HTML (covers both the 220-byte
+        meta-refresh redirect *and* the full JS challenge page).
       * **Cloudflare** — ``cf-mitigated: challenge`` header;
         ``redirected_url`` containing ``cdn-cgi/challenge`` or ``/__cf_chl``.
       * **Imperva / Incapsula** — redirect URL containing
@@ -808,6 +810,25 @@ def is_bot_challenge_response(result: "CrawlResult") -> bool:
     if title in _CHALLENGE_TITLES:
         return True
 
+    # 5. HTML body content fingerprint (catches WAFs that complete the JS
+    #    redirect back to the original URL before we capture redirected_url,
+    #    so checks 1-2 would otherwise miss them).
+    #
+    #    a) Stackpath Shield — "sgcaptcha" appears in both the tiny 220-byte
+    #       meta-refresh redirect AND the full JS challenge page; status is
+    #       202 for both.
+    #    b) Generic "Checking the site connection security" body text used by
+    #       Stackpath Shield and several other CDN WAFs.
+    #    c) Cloudflare / generic — "checking your browser" body text; also
+    #       "robot-suspicion" image asset served by Stackpath's CDN.
+    html_lower = (result.html or "").lower()
+    if result.status_code == 202 and (
+        "sgcaptcha" in html_lower
+        or "checking the site connection security" in html_lower
+        or "robot-suspicion" in html_lower
+    ):
+        return True
+
     return False
 
 
@@ -817,7 +838,7 @@ async def retry_if_bot_challenge(
     crawler: Any,
     base_config: Any,
     logger: Any = None,
-    retry_delays: Sequence[float] = (2.0, 5.0),
+    retry_delays: Sequence[float] = (2.0, 5.0, 10.0, 30.0, 60.0),
 ) -> "CrawlResult":
     """
     If *result* is a WAF/bot challenge, retry the URL with increasing delays.

@@ -811,16 +811,27 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                 # that the markdown generator produces useful output.
                 # This runs AFTER the bot-challenge redirect chain so the
                 # browser session cookies have already been applied.
-                _final_ct = response_headers.get("content-type", "").lower() if response_headers else ""
+                # ── PDF document interception ──────────────────────────────
+                # When Playwright navigates to a .pdf URL the PDF bytes may
+                # already be gone from the CDP response buffer by the time
+                # page.goto() returns (bot-challenge redirect + meta-refresh
+                # flushes it).  Instead we re-fetch the URL through the
+                # browser context's APIRequestContext, which inherits all
+                # session cookies accumulated during prior page visits so
+                # bot-challenge CAPTCHAs are bypassed automatically.
+                _pdf_html_extracted = False
                 _url_is_pdf = url.lower().split("?")[0].split("#")[0].endswith(".pdf")
-                if ("application/pdf" in _final_ct or _url_is_pdf) and response is not None:
+                if _url_is_pdf:
                     try:
                         import asyncio as _asyncio
                         import tempfile as _tempfile
                         from pathlib import Path as _Path
                         from .processors.pdf.processor import NaivePDFProcessorStrategy as _NaivePDF
 
-                        pdf_bytes = await response.body()
+                        # Re-fetch via the browser context so cookies are sent
+                        _api_resp = await context.request.get(url)
+                        pdf_bytes = await _api_resp.body()
+
                         # Sanity-check: real PDFs start with %PDF, not HTML
                         if pdf_bytes and pdf_bytes[:4] == b"%PDF":
                             self.logger.info(
@@ -836,23 +847,25 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                                 _pdf_result = await _asyncio.to_thread(
                                     _pdf_strategy.process_batch, _Path(_tmp_pdf)
                                 )
+                                # Use _pdf_page to avoid shadowing the Playwright page variable
                                 html = (
                                     f'<html><head><meta name="pdf-pages"'
                                     f' content="{len(_pdf_result.pages)}"></head><body>'
                                     + "".join(
                                         f'<div class="pdf-page" data-page="{i+1}">'
-                                        f"{page.html}</div>"
-                                        for i, page in enumerate(_pdf_result.pages)
+                                        f"{_pdf_page.html}</div>"
+                                        for i, _pdf_page in enumerate(_pdf_result.pages)
                                     )
                                     + "</body></html>"
                                 )
                                 status_code = 200
                                 response_headers = {"content-type": "text/html"}
+                                _pdf_html_extracted = True
                             finally:
                                 _Path(_tmp_pdf).unlink(missing_ok=True)
                         else:
                             self.logger.warning(
-                                message="PDF URL returned non-PDF bytes (len={size}, header={hdr!r}) — skipping text extraction",
+                                message="PDF URL returned non-PDF bytes (len={size}, header={hdr!r}) — cookies may not be set yet",
                                 tag="PDF",
                                 params={
                                     "size": len(pdf_bytes) if pdf_bytes else 0,
@@ -1115,7 +1128,11 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
 
             # --- Phase 5: HTML capture ---
 
-            if config.flatten_shadow_dom:
+            if _pdf_html_extracted:
+                # HTML was already set by the PDF interception block above;
+                # skip page.content() which would overwrite it with PDF-viewer HTML.
+                pass
+            elif config.flatten_shadow_dom:
                 # Use JS to serialize the full DOM including shadow roots
                 flatten_js = load_js_script("flatten_shadow_dom")
                 html = await self.adapter.evaluate(page, flatten_js)
