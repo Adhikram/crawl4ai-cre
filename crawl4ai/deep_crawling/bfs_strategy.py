@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import AsyncGenerator, Optional, Set, Dict, List, Tuple, Any, Callable, Awaitable, Union
+from typing import AsyncGenerator, List, Optional, Set, Dict, Tuple, Any, Callable, Awaitable, Union
 from urllib.parse import urlparse
 
 from ..models import TraversalStats
@@ -21,6 +21,19 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
       - arun: Main entry point; splits execution into batch or stream modes.
       - link_discovery: Extracts, filters, and (if needed) scores the outgoing URLs.
       - can_process_url: Validates URL format and applies the filter chain.
+
+    CRE extensions
+    --------------
+    * ``link_extractor``: Optional :class:`~crawl4ai.deep_crawling.cre_link_extractor.CRELinkExtractor`
+      that supplements crawl4ai's default ``<a href>`` link list with URLs found
+      in data attributes (``data-href``, ``data-url``, …) and inline JavaScript
+      patterns (``router.push``, ``location.href``, …).  Requires ``result.html``
+      to be populated (i.e. the crawl config must not discard the raw HTML).
+
+    * Any :class:`~crawl4ai.deep_crawling.cre_filters.CRENewsThresholdFilter`
+      found in ``filter_chain`` is automatically notified after each successful
+      page crawl via ``record_crawled(url)`` so its internal non-news counter
+      stays accurate.
     """
     def __init__(
         self,
@@ -36,6 +49,8 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
         on_state_change: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         # Optional cancellation callback - checked before each URL is processed
         should_cancel: Optional[Callable[[], Union[bool, Awaitable[bool]]]] = None,
+        # CRE: optional multi-source link extractor
+        link_extractor=None,
     ):
         self.max_depth = max_depth
         self.filter_chain = filter_chain
@@ -58,6 +73,46 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
         self._on_state_change = on_state_change
         self._should_cancel = should_cancel
         self._last_state: Optional[Dict[str, Any]] = None
+        # CRE multi-source link extractor (optional)
+        self._link_extractor = link_extractor
+
+    # ------------------------------------------------------------------
+    # CRE helpers
+    # ------------------------------------------------------------------
+
+    def _get_allowed_domains(self) -> set:
+        """
+        Return the set of allowed (normalised, www-stripped) hostnames from the
+        first CREDomainScopingFilter found in the filter chain.
+
+        Used by the link extractor to validate discovered URLs against the same
+        domain set that the filter chain enforces.  Returns an empty set if no
+        domain filter is present (the extractor will then accept any domain,
+        matching the behaviour of strategies without domain scoping).
+        """
+        try:
+            from .cre_filters import CREDomainScopingFilter
+            for f in getattr(self.filter_chain, "filters", []):
+                if isinstance(f, CREDomainScopingFilter):
+                    return set(f._allowed_normalized)
+        except Exception:
+            pass
+        return set()
+
+    def _notify_threshold_filters(self, url: str) -> None:
+        """
+        Notify every CRENewsThresholdFilter in the chain that a page was crawled.
+
+        This keeps the stateful non-news counter in sync without requiring the
+        caller to know the concrete filter type.
+        """
+        try:
+            from .cre_filters import CRENewsThresholdFilter
+            for f in getattr(self.filter_chain, "filters", []):
+                if isinstance(f, CRENewsThresholdFilter):
+                    f.record_crawled(url)
+        except Exception:
+            pass
 
     async def can_process_url(self, url: str, depth: int) -> bool:
         """
@@ -156,9 +211,22 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
             return
 
         # Get internal links and, if enabled, external links.
-        links = result.links.get("internal", [])
+        links = list(result.links.get("internal", []))
         if self.include_external:
             links += result.links.get("external", [])
+
+        # CRE: supplement with data-attribute + JS-pattern links
+        if self._link_extractor and getattr(result, "html", None):
+            allowed_domains = self._get_allowed_domains()
+            extra = self._link_extractor.extract(result.html, source_url, allowed_domains)
+            if extra:
+                seen_hrefs = {lnk.get("href") for lnk in links}
+                new_extra = [lnk for lnk in extra if lnk.get("href") not in seen_hrefs]
+                if new_extra:
+                    self.logger.debug(
+                        f"CRELinkExtractor found {len(new_extra)} additional links on {source_url}"
+                    )
+                links += new_extra
 
         valid_links = []
         
@@ -266,6 +334,12 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
                 if result.success:
                     # Increment pages crawled per URL for accurate state tracking
                     self._pages_crawled += 1
+                    self.logger.info(
+                        f"[{self._pages_crawled}/{self.max_pages}] ✅ depth={depth} {url}"
+                    )
+
+                    # CRE: update stateful news-threshold filter counter
+                    self._notify_threshold_filters(url)
 
                     # Link discovery will handle the max pages limit internally
                     await self.link_discovery(result, url, depth, visited, next_level, depths)
@@ -364,6 +438,9 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
                 
                 # Only discover links from successful crawls
                 if result.success:
+                    # CRE: update stateful news-threshold filter counter
+                    self._notify_threshold_filters(url)
+
                     # Link discovery will handle the max pages limit internally
                     await self.link_discovery(result, url, depth, visited, next_level, depths)
 

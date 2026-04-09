@@ -32,6 +32,17 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
       - _arun_best_first: Core generator that uses a priority queue to yield CrawlResults.
       - can_process_url: Validates URLs and applies filtering (inherited behavior).
       - link_discovery: Extracts and validates links from a CrawlResult.
+
+    CRE extensions
+    --------------
+    * ``link_extractor``: Optional :class:`~crawl4ai.deep_crawling.cre_link_extractor.CRELinkExtractor`
+      that supplements crawl4ai's default ``<a href>`` link list with URLs found
+      in data attributes (``data-href``, ``data-url``, …) and inline JavaScript
+      patterns (``router.push``, ``location.href``, …).
+
+    * Any :class:`~crawl4ai.deep_crawling.cre_filters.CRENewsThresholdFilter`
+      found in ``filter_chain`` is automatically notified after each successful
+      page crawl via ``record_crawled(url)``.
     """
     def __init__(
         self,
@@ -47,6 +58,8 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
         on_state_change: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         # Optional cancellation callback - checked before each URL is processed
         should_cancel: Optional[Callable[[], Union[bool, Awaitable[bool]]]] = None,
+        # CRE: optional multi-source link extractor
+        link_extractor=None,
     ):
         self.max_depth = max_depth
         self.filter_chain = filter_chain
@@ -71,6 +84,33 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
         self._last_state: Optional[Dict[str, Any]] = None
         # Shadow list for queue items (only used when on_state_change is set)
         self._queue_shadow: Optional[List[Tuple[float, int, str, Optional[str]]]] = None
+        # CRE multi-source link extractor (optional)
+        self._link_extractor = link_extractor
+
+    # ------------------------------------------------------------------
+    # CRE helpers (mirrors the same helpers in BFSDeepCrawlStrategy)
+    # ------------------------------------------------------------------
+
+    def _get_allowed_domains(self) -> set:
+        """Return allowed normalised hostnames from CREDomainScopingFilter in the chain."""
+        try:
+            from .cre_filters import CREDomainScopingFilter
+            for f in getattr(self.filter_chain, "filters", []):
+                if isinstance(f, CREDomainScopingFilter):
+                    return set(f._allowed_normalized)
+        except Exception:
+            pass
+        return set()
+
+    def _notify_threshold_filters(self, url: str) -> None:
+        """Notify every CRENewsThresholdFilter in the chain that a page was crawled."""
+        try:
+            from .cre_filters import CRENewsThresholdFilter
+            for f in getattr(self.filter_chain, "filters", []):
+                if isinstance(f, CRENewsThresholdFilter):
+                    f.record_crawled(url)
+        except Exception:
+            pass
 
     async def can_process_url(self, url: str, depth: int) -> bool:
         """
@@ -168,9 +208,22 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
             return
 
         # Retrieve internal links; include external links if enabled.
-        links = result.links.get("internal", [])
+        links = list(result.links.get("internal", []))
         if self.include_external:
             links += result.links.get("external", [])
+
+        # CRE: supplement with data-attribute + JS-pattern links
+        if self._link_extractor and getattr(result, "html", None):
+            allowed_domains = self._get_allowed_domains()
+            extra = self._link_extractor.extract(result.html, source_url, allowed_domains)
+            if extra:
+                seen_hrefs = {lnk.get("href") for lnk in links}
+                new_extra = [lnk for lnk in extra if lnk.get("href") not in seen_hrefs]
+                if new_extra:
+                    self.logger.debug(
+                        f"CRELinkExtractor found {len(new_extra)} additional links on {source_url}"
+                    )
+                links += new_extra
 
         # If we have more links than remaining capacity, limit how many we'll process
         valid_links = []
@@ -291,6 +344,11 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
                 # Count only successful crawls toward max_pages limit
                 if result.success:
                     self._pages_crawled += 1
+                    self.logger.info(
+                        f"[{self._pages_crawled}/{self.max_pages}] ✅ score={-score:.2f} depth={depth} {url}"
+                    )
+                    # CRE: update stateful news-threshold filter counter
+                    self._notify_threshold_filters(result_url)
                     # Check if we've reached the limit during batch processing
                     if self._pages_crawled >= self.max_pages:
                         self.logger.info(f"Max pages limit ({self.max_pages}) reached during batch, stopping crawl")

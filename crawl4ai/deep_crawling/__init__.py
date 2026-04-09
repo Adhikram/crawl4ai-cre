@@ -27,9 +27,12 @@ from .scorers import (
 from .cre_filters import (
     CREValidPageFilter,
     CRENewsFilter,
+    CREIrrelevantPatternFilter,
+    CRENewsThresholdFilter,
     CRERealEstateRelevanceFilter,
     CREDomainScopingFilter,
     build_cre_filter_chain,
+    async_build_cre_filter_chain,
 )
 from .cre_scorers import (
     CREKeywordRelevanceScorer,
@@ -37,6 +40,16 @@ from .cre_scorers import (
     CREPageTypePriorityScorer,
     build_cre_composite_scorer,
 )
+# Redirect utilities (async, HTTP-based)
+from .cre_redirect import (
+    RedirectResult,
+    follow_redirects_to_final_domain,
+    discover_all_redirect_domains,
+    normalize_url,
+    rewrite_url_to_canonical_host,
+)
+# CRE multi-source link extractor (data attributes + JS patterns)
+from .cre_link_extractor import CRELinkExtractor
 
 __all__ = [
     # Base strategies
@@ -65,12 +78,23 @@ __all__ = [
     # CRE filters
     "CREValidPageFilter",
     "CRENewsFilter",
+    "CREIrrelevantPatternFilter",
+    "CRENewsThresholdFilter",
     "CRERealEstateRelevanceFilter",
     "CREDomainScopingFilter",
     "build_cre_filter_chain",
+    "async_build_cre_filter_chain",
     # CRE scorers
     "CREKeywordRelevanceScorer",
     "CRENewsDeprioritizationScorer",
     "CREPageTypePriorityScorer",
     "build_cre_composite_scorer",
+    # CRE redirect utilities
+    "RedirectResult",
+    "follow_redirects_to_final_domain",
+    "discover_all_redirect_domains",
+    "normalize_url",
+    "rewrite_url_to_canonical_host",
+    # CRE link extractor
+    "CRELinkExtractor",
 ]

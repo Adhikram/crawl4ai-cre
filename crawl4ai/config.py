@@ -75,7 +75,6 @@ SOCIAL_MEDIA_DOMAINS = [
     "facebook.com",
     "twitter.com",
     "x.com",
-    "linkedin.com",
     "instagram.com",
     "pinterest.com",
     "tiktok.com",

@@ -240,26 +240,46 @@ def build_cre_composite_scorer(
     that combines all three CRE-specific scorers with configurable weights.
 
     Default weights reflect the fetchwebsite.ts priority logic:
-      * CRE keyword relevance  40 %
-      * News deprioritization  30 %
-      * Page-type priority     30 %
+      * CRE keyword relevance  40 %  (keyword match in URL path)
+      * News deprioritization  30 %  (penalise /blog/, /news/, /press/)
+      * Page-type priority     30 %  (known high-value CRE page segments)
+
+    **Score range**: 0.0 – 1.0 (true weighted sum, ``normalize=False``).
+    Representative values for accolend.com-style URLs::
+
+        /investment-criteria  → ~0.955   /fund            → ~0.925
+        /about                → ~0.880   /team            → ~0.865
+        /commercial-re        → ~0.835   /multifamily     → ~0.835
+        /loans                → ~0.575   /                → ~0.575
+        /contact  (exclude)   → ~0.415   /careers         → ~0.415
+        /blog/post (news)     → ~0.205   /news/article    → ~0.205
+
+    Recommended ``score_threshold`` values:
+      * 0.45 — focus on Tier A/B (IC, strategy, about, team) — skip news/exclude
+      * 0.35 — include product verticals (multifamily, commercial)
+      * 0.25 — include generic pages; still blocks news/blog
+      * 0.0  — no threshold (all domain-scoped pages)
 
     Example::
 
         scorer = build_cre_composite_scorer()
         strategy = BFSDeepCrawlStrategy(
-            max_depth=3,
+            max_depth=4,
             url_scorer=scorer,
-            score_threshold=0.35,
+            score_threshold=0.45,   # skip contact / careers / news
+            max_pages=200,
         )
     """
     from .scorers import CompositeScorer
 
+    # normalize=False → raw weighted sum so composite ∈ [0, 1] when weights sum to 1.
+    # CompositeScorer with normalize=True divides by scorer *count* (not weight sum),
+    # which compresses the range to [0, max_weight] — use False to get true [0, 1].
     return CompositeScorer(
         scorers=[
             CREKeywordRelevanceScorer(weight=keyword_weight),
             CRENewsDeprioritizationScorer(weight=news_weight),
             CREPageTypePriorityScorer(weight=page_type_weight),
         ],
-        normalize=True,
+        normalize=False,
     )

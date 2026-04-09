@@ -32,6 +32,7 @@ from crawl4ai import (
     DFSDeepCrawlStrategy,
     BestFirstCrawlingStrategy,
 )
+from urllib.parse import urlparse as _urlparse
 from crawl4ai.browser_profiler import ShrinkLevel, _format_size
 from crawl4ai.config import USER_SETTINGS
 from crawl4ai.cloud import cloud_cmd
@@ -149,11 +150,104 @@ def load_schema_file(path: Optional[str]) -> dict:
         return None
     return load_config_file(path)
 
-async def run_crawler(url: str, browser_cfg: BrowserConfig, crawler_cfg: CrawlerRunConfig, verbose: bool):
+async def _apply_cre_redirect_discovery(
+    url: str,
+    strategy,
+    verbose: bool,
+) -> None:
+    """
+    Async pre-flight: resolve redirect chain for *url*, build a
+    :class:`CREDomainScopingFilter` that covers www/non-www variants and all
+    redirect-chain domains, then hot-patch the strategy's ``filter_chain`` in-place.
+
+    Called from :func:`run_crawler` when ``cre_options["redirect_discovery"]`` is True.
+    Works identically for BFSDeepCrawlStrategy, DFSDeepCrawlStrategy, and
+    BestFirstCrawlingStrategy because all three store their filter on
+    ``self.filter_chain``.
+    """
+    try:
+        from crawl4ai.deep_crawling.cre_redirect import discover_all_redirect_domains
+        from crawl4ai.deep_crawling.cre_filters import (
+            CREValidPageFilter, CRENewsFilter, CREDomainScopingFilter,
+        )
+        from crawl4ai.deep_crawling.filters import FilterChain
+
+        if verbose:
+            click.echo(f"[CRE] 🔍 Discovering redirect chain for: {url}")
+
+        rr = await discover_all_redirect_domains(url, concurrency=4)
+
+        # Build a domain-scoping filter that accepts every discovered hostname
+        extra = sorted(rr.all_domains - {rr.final_domain})
+        domain_filter = CREDomainScopingFilter(
+            base_domain=rr.final_domain,
+            extra_domains=extra,
+            allow_pdf_bypass=True,
+        )
+
+        # Preserve any existing non-domain filters in the chain
+        existing_filters = []
+        if hasattr(strategy, "filter_chain") and strategy.filter_chain:
+            for f in getattr(strategy.filter_chain, "_filters", []):
+                if not isinstance(f, CREDomainScopingFilter):
+                    existing_filters.append(f)
+
+        # Standard CRE order: valid-page → domain-scope → news
+        new_chain = FilterChain([
+            CREValidPageFilter(),
+            domain_filter,
+            CRENewsFilter(),
+        ])
+        strategy.filter_chain = new_chain
+
+        if verbose:
+            click.echo(
+                f"[CRE] ✅ Final URL : {rr.final_url}\n"
+                f"[CRE] 🌐 All domains: {sorted(rr.all_domains)}\n"
+                f"[CRE] 🔗 Filter chain patched on {type(strategy).__name__}"
+            )
+
+    except ImportError as ie:
+        if verbose:
+            click.echo(f"[CRE] ⚠ cre_redirect not available ({ie}), using base-domain filter only")
+    except Exception as exc:
+        # Non-fatal – fall back to the synchronous filter already set
+        if verbose:
+            click.echo(f"[CRE] ⚠ Redirect discovery failed: {exc} — using base-domain filter only")
+
+
+async def run_crawler(
+    url: str,
+    browser_cfg: BrowserConfig,
+    crawler_cfg: CrawlerRunConfig,
+    verbose: bool,
+    cre_options: Optional[dict] = None,
+):
+    # When -v is set, pipe the deep-crawl strategy logger to stdout so the user
+    # sees a live  "[n/max] ✅ depth=d <url>"  line for every crawled page.
+    if verbose:
+        import logging as _logging
+        _handler = _logging.StreamHandler()
+        _handler.setFormatter(_logging.Formatter("%(message)s"))
+        _logging.getLogger("crawl4ai.deep_crawling.bfs_strategy").addHandler(_handler)
+        _logging.getLogger("crawl4ai.deep_crawling.bfs_strategy").setLevel(_logging.INFO)
+        _logging.getLogger("crawl4ai.deep_crawling.dfs_strategy").addHandler(_handler)
+        _logging.getLogger("crawl4ai.deep_crawling.dfs_strategy").setLevel(_logging.INFO)
+        _logging.getLogger("crawl4ai.deep_crawling.bff_strategy").addHandler(_handler)
+        _logging.getLogger("crawl4ai.deep_crawling.bff_strategy").setLevel(_logging.INFO)
+
     if verbose:
         click.echo("Starting crawler with configurations:")
         click.echo(f"Browser config: {browser_cfg.dump()}")
         click.echo(f"Crawler config: {crawler_cfg.dump()}")
+
+    # CRE redirect discovery — runs once before the first page is fetched.
+    # This works for all three strategies (BFS / DFS / BestFirst) because they
+    # all expose self.filter_chain with the same interface.
+    if cre_options and cre_options.get("redirect_discovery"):
+        strategy = getattr(crawler_cfg, "deep_crawl_strategy", None)
+        if strategy is not None:
+            await _apply_cre_redirect_discovery(url, strategy, verbose)
 
     async with AsyncWebCrawler(config=browser_cfg) as crawler:
         try:
@@ -1028,10 +1122,18 @@ def cdp_cmd(user_data_dir: Optional[str], port: int, browser_type: str, headless
 @click.option("--profile", "-p", help="Use a specific browser profile (by name)")
 @click.option("--deep-crawl", type=click.Choice(["bfs", "dfs", "best-first"]), help="Enable deep crawling with specified strategy (bfs, dfs, or best-first)")
 @click.option("--max-pages", type=int, default=10, help="Maximum number of pages to crawl in deep crawl mode")
+@click.option("--max-depth", type=int, default=3, help="Maximum link depth for deep crawl (default: 3)")
+@click.option("--cre", "cre_scoring", is_flag=True, default=False,
+              help="Enable CRE (Commercial Real Estate) scoring and filtering.  "
+                   "Wires up CREKeywordRelevanceScorer + CRENewsDeprioritizationScorer + "
+                   "CREPageTypePriorityScorer and a domain-scoping filter so the crawl "
+                   "prioritises investment-criteria pages over news/contact/admin URLs.")
 @click.option("--json-ensure-ascii/--no-json-ensure-ascii", default=None, help="Escape non-ASCII characters in JSON output (default: from global config)")
 def crawl_cmd(url: str, browser_config: str, crawler_config: str, filter_config: str,
            extraction_config: str, json_extract: str, schema: str, browser: Dict, crawler: Dict,
-           output: str, output_file: str, bypass_cache: bool, question: str, verbose: bool, profile: str, deep_crawl: str, max_pages: int, json_ensure_ascii: Optional[bool]):
+           output: str, output_file: str, bypass_cache: bool, question: str, verbose: bool, profile: str,
+           deep_crawl: str, max_pages: int, max_depth: int, cre_scoring: bool,
+           json_ensure_ascii: Optional[bool]):
     """Crawl a website and extract content
 
     Simple Usage:
@@ -1172,25 +1274,67 @@ Always return valid, properly formatted JSON."""
         crawler_cfg.scraping_strategy = LXMLWebScrapingStrategy()    
 
         # Handle deep crawling configuration
+        _cre_options: Optional[dict] = None   # set below when --cre is active
         if deep_crawl:
+            # ── CRE scorer + initial sync filter (--cre flag) ─────────────
+            # A synchronous base-domain filter is built here and set on the
+            # strategy immediately.  The async redirect-discovery step
+            # (_apply_cre_redirect_discovery) runs inside run_crawler and
+            # *replaces* this filter with a redirect-aware one that covers
+            # www/non-www variants discovered via HTTP HEAD requests.
+            # All three strategies (BFS / DFS / BestFirst) use self.filter_chain
+            # so the hot-patch works uniformly.
+            _filter_chain = None
+            _scorer       = None
+
+            if cre_scoring:
+                try:
+                    from crawl4ai.deep_crawling.cre_filters import build_cre_filter_chain
+                    from crawl4ai.deep_crawling.cre_scorers import build_cre_composite_scorer
+
+                    _base_domain  = _urlparse(url).hostname or url
+                    _filter_chain = build_cre_filter_chain(base_domain=_base_domain)
+                    _scorer       = build_cre_composite_scorer()
+                    # Signal run_crawler to perform async redirect discovery
+                    _cre_options  = {"redirect_discovery": True}
+
+                    if verbose:
+                        console.print(
+                            f"[cyan]CRE scoring enabled[/cyan] — "
+                            f"seed domain=[bold]{_base_domain}[/bold]"
+                        )
+                        console.print(
+                            "  Scorers : CREKeywordRelevance(w=0.4) + "
+                            "CRENewsDeprioritization(w=0.3) + CREPageTypePriority(w=0.3)\n"
+                            "  Filters : CREValidPage → CREDomainScoping (redirect-aware) → CRENews"
+                        )
+                except ImportError as _ie:
+                    console.print(
+                        f"[yellow]⚠ CRE modules not found ({_ie}). "
+                        "Running without CRE scoring.[/yellow]"
+                    )
+
+            # ── Build the chosen strategy ──────────────────────────────────
+            _strategy_kwargs = dict(
+                max_depth=max_depth,
+                max_pages=max_pages,
+                url_scorer=_scorer,
+            )
+            if _filter_chain is not None:
+                _strategy_kwargs["filter_chain"] = _filter_chain
+
             if deep_crawl == "bfs":
-                crawler_cfg.deep_crawl_strategy = BFSDeepCrawlStrategy(
-                    max_depth=3,
-                    max_pages=max_pages
-                )
+                crawler_cfg.deep_crawl_strategy = BFSDeepCrawlStrategy(**_strategy_kwargs)
             elif deep_crawl == "dfs":
-                crawler_cfg.deep_crawl_strategy = DFSDeepCrawlStrategy(
-                    max_depth=3,
-                    max_pages=max_pages
-                )
+                crawler_cfg.deep_crawl_strategy = DFSDeepCrawlStrategy(**_strategy_kwargs)
             elif deep_crawl == "best-first":
-                crawler_cfg.deep_crawl_strategy = BestFirstCrawlingStrategy(
-                    max_depth=3,
-                    max_pages=max_pages
-                )
-            
+                crawler_cfg.deep_crawl_strategy = BestFirstCrawlingStrategy(**_strategy_kwargs)
+
             if verbose:
-                console.print(f"[green]Deep crawling enabled:[/green] {deep_crawl} strategy, max {max_pages} pages")
+                console.print(
+                    f"[green]Deep crawling enabled:[/green] {deep_crawl} strategy, "
+                    f"max_depth={max_depth}, max_pages={max_pages}"
+                )
 
         config = get_global_config()
         
@@ -1203,13 +1347,14 @@ Always return valid, properly formatted JSON."""
         else:
             ensure_ascii = config.get("JSON_ENSURE_ASCII", USER_SETTINGS["JSON_ENSURE_ASCII"]["default"])
 
-        # Run crawler
+        # Run crawler (cre_options triggers async redirect discovery inside run_crawler)
         result : CrawlResult = anyio.run(
             run_crawler,
             url,
             browser_cfg,
             crawler_cfg,
-            verbose
+            verbose,
+            _cre_options,
         )
 
         # Handle deep crawl results (list) vs single result
@@ -1585,10 +1730,15 @@ def shrink_cmd(profile_name: str, level: str, dry_run: bool):
 @click.option("--profile", "-p", help="Use a specific browser profile (by name)")
 @click.option("--deep-crawl", type=click.Choice(["bfs", "dfs", "best-first"]), help="Enable deep crawling with specified strategy")
 @click.option("--max-pages", type=int, default=10, help="Maximum number of pages to crawl in deep crawl mode")
+@click.option("--max-depth", type=int, default=3, help="Maximum link depth for deep crawl (default: 3)")
+@click.option("--cre", "cre_scoring", is_flag=True, default=False,
+              help="Enable CRE scoring & domain-scoping filter for deep crawl.")
 @click.option("--json-ensure-ascii/--no-json-ensure-ascii", default=None, help="Escape non-ASCII characters in JSON output (default: from global config)")
 def default(url: str, example: bool, browser_config: str, crawler_config: str, filter_config: str,
         extraction_config: str, json_extract: str, schema: str, browser: Dict, crawler: Dict,
-        output: str, bypass_cache: bool, question: str, verbose: bool, profile: str, deep_crawl: str, max_pages: int, json_ensure_ascii: Optional[bool]):
+        output: str, bypass_cache: bool, question: str, verbose: bool, profile: str,
+        deep_crawl: str, max_pages: int, max_depth: int, cre_scoring: bool,
+        json_ensure_ascii: Optional[bool]):
     """Crawl4AI CLI - Web content extraction tool
 
     Simple Usage:
@@ -1635,12 +1785,15 @@ def default(url: str, example: bool, browser_config: str, crawler_config: str, f
         browser=browser,
         crawler=crawler,
         output=output,
+        output_file=None,
         bypass_cache=bypass_cache,
         question=question,
         verbose=verbose,
         profile=profile,
         deep_crawl=deep_crawl,
         max_pages=max_pages,
+        max_depth=max_depth,
+        cre_scoring=cre_scoring,
         json_ensure_ascii=json_ensure_ascii
     )
 

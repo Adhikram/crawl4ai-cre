@@ -88,6 +88,9 @@ class DFSDeepCrawlStrategy(BFSDeepCrawlStrategy):
                 # Count only successful crawls toward max_pages limit
                 if result.success:
                     self._pages_crawled += 1
+                    self.logger.info(
+                        f"[{self._pages_crawled}/{self.max_pages}] ✅ depth={depth} {url}"
+                    )
                     # Check if we've reached the limit during batch processing
                     if self._pages_crawled >= self.max_pages:
                         self.logger.info(f"Max pages limit ({self.max_pages}) reached during batch, stopping crawl")
@@ -196,6 +199,9 @@ class DFSDeepCrawlStrategy(BFSDeepCrawlStrategy):
                 # and only discover links from successful crawls
                 if result.success:
                     self._pages_crawled += 1
+                    self.logger.info(
+                        f"[{self._pages_crawled}/{self.max_pages}] ✅ depth={depth} {url}"
+                    )
                     # Check if we've reached the limit during batch processing
                     if self._pages_crawled >= self.max_pages:
                         self.logger.info(f"Max pages limit ({self.max_pages}) reached during batch, stopping crawl")
