@@ -10,9 +10,10 @@ from pydantic import BaseModel, HttpUrl
 from api import (
     handle_llm_request,
     handle_crawl_job,
+    handle_cre_crawl_job,
     handle_task_status,
 )
-from schemas import WebhookConfig
+from schemas import WebhookConfig, CRECrawlRequest
 
 # ------------- dependency placeholders -------------
 _redis = None        # will be injected from server.py
@@ -115,4 +116,46 @@ async def crawl_job_status(
     task_id: str,
     _td: Dict = Depends(lambda: _token_dep())
 ):
+    return await handle_task_status(_redis, task_id, base_url=str(request.base_url))
+
+
+# ---------- CRE deep-crawl job -----------------------------------------------
+
+@router.post("/crawl/cre/job", status_code=202)
+async def cre_crawl_job_enqueue(
+    payload: CRECrawlRequest,
+    background_tasks: BackgroundTasks,
+    _td: Dict = Depends(lambda: _token_dep()),
+):
+    """
+    Submit a CRE deep-crawl as a background job.
+
+    Returns a task_id immediately. Poll GET /crawl/cre/job/{task_id} for status,
+    or supply webhook_config to receive a POST notification on completion.
+    """
+    webhook_config = None
+    if payload.webhook_config:
+        webhook_config = payload.webhook_config.model_dump(mode="json")
+
+    return await handle_cre_crawl_job(
+        redis=_redis,
+        background_tasks=background_tasks,
+        url=str(payload.url),
+        strategy=payload.strategy,
+        max_pages=payload.max_pages,
+        max_depth=payload.max_depth,
+        include_news=payload.include_news,
+        no_html=payload.no_html,
+        config=_config,
+        webhook_config=webhook_config,
+    )
+
+
+@router.get("/crawl/cre/job/{task_id}")
+async def cre_crawl_job_status(
+    request: Request,
+    task_id: str,
+    _td: Dict = Depends(lambda: _token_dep()),
+):
+    """Poll the status/result of a CRE deep-crawl job."""
     return await handle_task_status(_redis, task_id, base_url=str(request.base_url))

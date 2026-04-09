@@ -22,8 +22,11 @@ from crawl4ai import (
     CacheMode,
     BrowserConfig,
     MemoryAdaptiveDispatcher,
-    RateLimiter, 
-    LLMConfig
+    RateLimiter,
+    LLMConfig,
+    BFSDeepCrawlStrategy,
+    DFSDeepCrawlStrategy,
+    BestFirstCrawlingStrategy,
 )
 from crawl4ai.utils import perform_completion_with_backoff
 from crawl4ai.content_filter_strategy import (
@@ -878,6 +881,220 @@ async def handle_crawl_job(
                 urls=urls,
                 webhook_config=webhook_config,
                 error=str(exc)
+            )
+
+    background_tasks.add_task(_runner)
+    return {"task_id": task_id}
+
+
+# ─────────────────────────────────────────────────────────────
+#  CRE deep-crawl helpers
+# ─────────────────────────────────────────────────────────────
+
+def _build_cre_configs(
+    url: str,
+    strategy: str,
+    max_pages: int,
+    max_depth: int,
+    include_news: bool,
+    stream: bool = False,
+):
+    """Return (browser_cfg, crawler_cfg) with all CRE defaults applied."""
+    from urllib.parse import urlparse as _up
+    from crawl4ai.deep_crawling.cre_filters import build_cre_filter_chain
+    from crawl4ai.deep_crawling.cre_scorers import build_cre_composite_scorer
+
+    base_domain = _up(url).hostname or url
+    filter_chain = build_cre_filter_chain(base_domain=base_domain, allow_news=include_news)
+    scorer = build_cre_composite_scorer()
+
+    strategy_kwargs = dict(
+        max_depth=max_depth,
+        max_pages=max_pages,
+        filter_chain=filter_chain,
+        url_scorer=scorer,
+    )
+    if strategy == "bfs":
+        deep_crawl_strategy = BFSDeepCrawlStrategy(**strategy_kwargs)
+    elif strategy == "best-first":
+        deep_crawl_strategy = BestFirstCrawlingStrategy(**strategy_kwargs)
+    else:
+        deep_crawl_strategy = DFSDeepCrawlStrategy(**strategy_kwargs)
+
+    browser_cfg = BrowserConfig(
+        user_agent_mode="random",
+        enable_stealth=True,
+        extra_args=["--enable-cookies", "--disable-cookie-encryption"],
+    )
+    crawler_cfg = CrawlerRunConfig(
+        deep_crawl_strategy=deep_crawl_strategy,
+        scraping_strategy=LXMLWebScrapingStrategy(),
+        simulate_user=True,
+        wait_until="domcontentloaded",
+        page_timeout=90_000,
+        stream=stream,
+    )
+    return browser_cfg, crawler_cfg
+
+
+def _strip_html(result_dict: dict) -> dict:
+    """Remove raw HTML fields to reduce payload size."""
+    for key in ("html", "cleaned_html"):
+        result_dict.pop(key, None)
+    md = result_dict.get("markdown")
+    if isinstance(md, dict):
+        md.pop("fit_html", None)
+    return result_dict
+
+
+async def handle_cre_crawl_request(
+    url: str,
+    strategy: str = "dfs",
+    max_pages: int = 500,
+    max_depth: int = 10,
+    include_news: bool = False,
+    no_html: bool = True,
+) -> dict:
+    """Synchronous CRE deep-crawl — returns all results at once."""
+    from crawler_pool import get_crawler, release_crawler
+
+    browser_cfg, crawler_cfg = _build_cre_configs(
+        url, strategy, max_pages, max_depth, include_news
+    )
+
+    start_time = time.time()
+    start_mem_mb = _get_memory_mb()
+    crawler = None
+    try:
+        crawler = await get_crawler(browser_cfg)
+        results = await crawler.arun(url, config=crawler_cfg)
+        if not isinstance(results, list):
+            results = [results]
+
+        end_mem_mb = _get_memory_mb()
+        mem_delta_mb = (
+            (end_mem_mb - start_mem_mb)
+            if start_mem_mb is not None and end_mem_mb is not None
+            else None
+        )
+
+        processed = []
+        for r in results:
+            d = r.model_dump() if hasattr(r, "model_dump") else dict(r)
+            if d.get("pdf") and isinstance(d["pdf"], bytes):
+                d["pdf"] = b64encode(d["pdf"]).decode()
+            if no_html:
+                d = _strip_html(d)
+            processed.append(d)
+
+        return {
+            "success": True,
+            "results": processed,
+            "total_pages": len(processed),
+            "server_processing_time_s": time.time() - start_time,
+            "server_memory_delta_mb": mem_delta_mb,
+        }
+    except Exception as e:
+        logger.error(f"CRE crawl error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    finally:
+        if crawler:
+            await release_crawler(crawler)
+
+
+async def handle_cre_stream_crawl_request(
+    url: str,
+    strategy: str = "dfs",
+    max_pages: int = 500,
+    max_depth: int = 10,
+    include_news: bool = False,
+):
+    """Set up a streaming CRE deep-crawl. Returns (crawler, async_generator)."""
+    from crawler_pool import get_crawler, release_crawler
+
+    browser_cfg, crawler_cfg = _build_cre_configs(
+        url, strategy, max_pages, max_depth, include_news, stream=True
+    )
+    crawler = None
+    try:
+        crawler = await get_crawler(browser_cfg)
+        results_gen = await crawler.arun(url, config=crawler_cfg)
+        return crawler, results_gen
+    except Exception as e:
+        if crawler:
+            await release_crawler(crawler)
+        logger.error(f"CRE stream crawl error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+async def handle_cre_crawl_job(
+    redis,
+    background_tasks,
+    url: str,
+    strategy: str = "dfs",
+    max_pages: int = 500,
+    max_depth: int = 10,
+    include_news: bool = False,
+    no_html: bool = True,
+    config: dict = None,
+    webhook_config: Optional[Dict] = None,
+) -> dict:
+    """Fire-and-forget CRE deep-crawl job stored in Redis."""
+    task_id = f"cre_{uuid4().hex[:8]}"
+    task_data = {
+        "status": TaskStatus.PROCESSING,
+        "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+        "url": url,
+        "result": "",
+        "error": "",
+    }
+    if webhook_config:
+        task_data["webhook_config"] = json.dumps(webhook_config)
+
+    await hset_with_ttl(redis, f"task:{task_id}", task_data, config)
+    webhook_service = WebhookDeliveryService(config)
+
+    async def _runner():
+        try:
+            result = await handle_cre_crawl_request(
+                url=url,
+                strategy=strategy,
+                max_pages=max_pages,
+                max_depth=max_depth,
+                include_news=include_news,
+                no_html=no_html,
+            )
+            await hset_with_ttl(redis, f"task:{task_id}", {
+                "status": TaskStatus.COMPLETED,
+                "result": json.dumps(result),
+            }, config)
+            await webhook_service.notify_job_completion(
+                task_id=task_id,
+                task_type="cre_crawl",
+                status="completed",
+                urls=[url],
+                webhook_config=webhook_config,
+                result=result,
+            )
+            await asyncio.sleep(5)
+        except Exception as exc:
+            await hset_with_ttl(redis, f"task:{task_id}", {
+                "status": TaskStatus.FAILED,
+                "error": str(exc),
+            }, config)
+            await webhook_service.notify_job_completion(
+                task_id=task_id,
+                task_type="cre_crawl",
+                status="failed",
+                urls=[url],
+                webhook_config=webhook_config,
+                error=str(exc),
             )
 
     background_tasks.add_task(_runner)

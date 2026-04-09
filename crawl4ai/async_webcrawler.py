@@ -54,6 +54,35 @@ from .cache_validator import CacheValidator, CacheValidationResult
 from .antibot_detector import is_blocked
 
 
+def _is_non_html_content(response_headers: dict | None) -> bool:
+    """Return True when the response is a binary/non-HTML document (PDF, image, etc.).
+
+    Anti-bot detection only makes sense for HTML pages.  PDFs and other binary
+    assets naturally contain no semantic HTML, so the structural integrity check
+    generates false positives for them.
+    """
+    if not response_headers:
+        return False
+    ct = response_headers.get("content-type", "").lower()
+    if not ct:
+        return False
+    # Allow text/html and text/xhtml through; skip everything else with a
+    # recognisable non-HTML MIME type.
+    non_html_prefixes = (
+        "application/pdf",
+        "application/octet-stream",
+        "application/zip",
+        "application/x-zip",
+        "application/msword",
+        "application/vnd.",
+        "image/",
+        "video/",
+        "audio/",
+        "font/",
+    )
+    return any(ct.startswith(prefix) for prefix in non_html_prefixes)
+
+
 class AsyncWebCrawler:
     """
     Asynchronous web crawler with flexible caching capabilities.
@@ -398,6 +427,58 @@ class AsyncWebCrawler:
                     # proxy retries, and fallback fetching are meaningless here.
                     _is_raw_url = url.startswith("raw:") or url.startswith("raw://")
 
+                    # --- PDF short-circuit ---
+                    # When a URL clearly points to a PDF document, skip Playwright
+                    # entirely and use PDFContentScrapingStrategy to download and
+                    # parse the file directly.  This is triggered when:
+                    #   • the URL path ends with .pdf (case-insensitive), AND
+                    #   • the caller hasn't already set a custom scraping_strategy
+                    #     (so explicit overrides are respected).
+                    from .processors.pdf import PDFContentScrapingStrategy as _PDFScraper
+                    _is_pdf_url = (
+                        not _is_raw_url
+                        and url.lower().split("?")[0].split("#")[0].endswith(".pdf")
+                        and not isinstance(
+                            getattr(config, "scraping_strategy", None), _PDFScraper
+                        )
+                    )
+                    if _is_pdf_url:
+                        _pdf_config = config.clone()
+                        _pdf_config.scraping_strategy = _PDFScraper()
+                        try:
+                            self.logger.info(
+                                message="PDF detected — processing directly: {url}",
+                                tag="PDF",
+                                params={"url": url[:120]},
+                            )
+                            crawl_result = await self.aprocess_html(
+                                url=url,
+                                html="",
+                                extracted_content=None,
+                                config=_pdf_config,
+                                screenshot_data=None,
+                                pdf_data=None,
+                                verbose=config.verbose,
+                            )
+                            crawl_result.status_code = 200
+                            crawl_result.cache_status = "miss"
+                        except Exception as _pdf_err:
+                            crawl_result = CrawlResult(
+                                url=url,
+                                html="",
+                                success=False,
+                                error_message=f"PDF processing failed: {_pdf_err}",
+                            )
+                        if cache_context.should_write() and crawl_result.success:
+                            await async_db_manager.acache_url(crawl_result)
+                        self.logger.url_status(
+                            url=cache_context.display_url,
+                            success=crawl_result.success,
+                            timing=time.perf_counter() - start_time,
+                            tag="COMPLETE",
+                        )
+                        return CrawlResultContainer(crawl_result)
+
                     _max_attempts = 1 + getattr(config, "max_retries", 0)
                     _proxy_list = config._get_proxy_list()
                     _original_proxy_config = config.proxy_config
@@ -496,8 +577,10 @@ class AsyncWebCrawler:
                                 crawl_result.cache_status = "miss"
 
                                 # Check if blocked (skip for raw: URLs —
-                                # caller-provided content, anti-bot N/A)
-                                if _is_raw_url:
+                                # caller-provided content, anti-bot N/A; also
+                                # skip for non-HTML content like PDFs/images
+                                # which have no semantic HTML by design).
+                                if _is_raw_url or _is_non_html_content(async_response.response_headers):
                                     _blocked = False
                                     _block_reason = ""
                                 else:
@@ -546,7 +629,10 @@ class AsyncWebCrawler:
                     if _fallback_fn and not _done and not _is_raw_url:
                         _needs_fallback = (
                             crawl_result is None  # All proxies threw exceptions
-                            or is_blocked(crawl_result.status_code, crawl_result.html or "")[0]
+                            or (
+                                not _is_non_html_content(crawl_result.response_headers)
+                                and is_blocked(crawl_result.status_code, crawl_result.html or "")[0]
+                            )
                         )
                         if _needs_fallback:
                             self.logger.warning(
@@ -607,9 +693,15 @@ class AsyncWebCrawler:
                     # When fallback was attempted but FAILED, we must still re-check
                     # because the result is from a blocked proxy attempt.
                     # Also skip for raw: URLs — caller-provided content, anti-bot N/A.
+                    # Also skip for non-HTML content types (PDFs, images, etc.) — these
+                    # have no semantic HTML by design and would trigger false positives.
                     if crawl_result:
                         _fallback_succeeded = _crawl_stats.get("resolved_by") == "fallback_fetch"
-                        if not _fallback_succeeded and not _is_raw_url:
+                        if (
+                            not _fallback_succeeded
+                            and not _is_raw_url
+                            and not _is_non_html_content(crawl_result.response_headers)
+                        ):
                             _blocked, _block_reason = is_blocked(
                                 crawl_result.status_code, crawl_result.html or "")
                             if _blocked:

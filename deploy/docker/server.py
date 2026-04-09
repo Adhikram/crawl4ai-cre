@@ -22,10 +22,12 @@ from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
 from api import (
     handle_markdown_request, handle_llm_qa,
     handle_stream_crawl_request, handle_crawl_request,
-    stream_results
+    handle_cre_crawl_request, handle_cre_stream_crawl_request,
+    stream_results,
 )
 from schemas import (
     CrawlRequestWithHooks,
+    CRECrawlRequest,
     MarkdownRequest,
     RawCode,
     HTMLRequest,
@@ -736,6 +738,95 @@ async def stream_process(crawl_request: CrawlRequestWithHooks):
         stream_results(crawler, gen),
         media_type="application/x-ndjson",
         headers=headers,
+    )
+
+
+@app.post("/crawl/cre")
+@limiter.limit(config["rate_limiting"]["default_limit"])
+async def crawl_cre(
+    request: Request,
+    body: CRECrawlRequest,
+    _td: Dict = Depends(token_dep),
+):
+    """
+    CRE-optimised deep crawl (synchronous).
+
+    Automatically applies:
+    - DFS/BFS/BestFirst deep-crawl strategy with CRE domain filter and scorer
+    - Stealth browser (random UA, cookie handling, anti-bot flags)
+    - WAF-safe timing (domcontentloaded + 90 s page timeout)
+    - Optional news/blog page filtering
+
+    Returns all crawled pages in a single JSON response.
+    For long crawls prefer /crawl/cre/stream or the async /crawl/cre/job.
+    """
+    validate_url_scheme(body.url)
+    results = await handle_cre_crawl_request(
+        url=body.url,
+        strategy=body.strategy,
+        max_pages=body.max_pages,
+        max_depth=body.max_depth,
+        include_news=body.include_news,
+        no_html=body.no_html,
+    )
+    return JSONResponse(results)
+
+
+@app.post("/crawl/cre/stream")
+@limiter.limit(config["rate_limiting"]["default_limit"])
+async def crawl_cre_stream(
+    request: Request,
+    body: CRECrawlRequest,
+    _td: Dict = Depends(token_dep),
+):
+    """
+    CRE-optimised deep crawl (streaming NDJSON).
+
+    Same CRE defaults as /crawl/cre but results are streamed line-by-line
+    as newline-delimited JSON so the client receives pages as they are crawled.
+    The final line is always {"status": "completed"}.
+    """
+    validate_url_scheme(body.url)
+    crawler, gen = await handle_cre_stream_crawl_request(
+        url=body.url,
+        strategy=body.strategy,
+        max_pages=body.max_pages,
+        max_depth=body.max_depth,
+        include_news=body.include_news,
+    )
+
+    no_html = body.no_html
+
+    async def _cre_stream():
+        import json as _json
+        from utils import datetime_handler
+        from crawler_pool import release_crawler as _rc
+        try:
+            async for result in gen:
+                try:
+                    d = result.model_dump()
+                    if d.get("pdf") is not None:
+                        from base64 import b64encode
+                        d["pdf"] = b64encode(d["pdf"]).decode()
+                    if no_html:
+                        for k in ("html", "cleaned_html"):
+                            d.pop(k, None)
+                        md = d.get("markdown")
+                        if isinstance(md, dict):
+                            md.pop("fit_html", None)
+                    yield (_json.dumps(d, default=datetime_handler) + "\n").encode()
+                except Exception as e:
+                    yield (_json.dumps({"error": str(e), "url": getattr(result, "url", "unknown")}) + "\n").encode()
+            yield _json.dumps({"status": "completed"}).encode()
+        except Exception:
+            pass
+        finally:
+            await _rc(crawler)
+
+    return StreamingResponse(
+        _cre_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Stream-Status": "active"},
     )
 
 

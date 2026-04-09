@@ -108,6 +108,17 @@ async def stream_llm_response(url: str, markdown: str, query: str, provider: str
 
 
 
+_HTML_FIELDS = frozenset({"html", "fit_html", "cleaned_html"})
+
+
+def _strip_html(d: dict) -> dict:
+    """Remove bulky HTML fields from a model_dump() dict to shrink output size."""
+    out = {k: v for k, v in d.items() if k not in _HTML_FIELDS}
+    if isinstance(out.get("markdown"), dict):
+        out["markdown"] = {k: v for k, v in out["markdown"].items() if k != "fit_html"}
+    return out
+
+
 def parse_key_values(ctx, param, value) -> Dict[str, Any]:
     if not value:
         return {}
@@ -154,6 +165,7 @@ async def _apply_cre_redirect_discovery(
     url: str,
     strategy,
     verbose: bool,
+    allow_news: bool = False,
 ) -> None:
     """
     Async pre-flight: resolve redirect chain for *url*, build a
@@ -164,6 +176,9 @@ async def _apply_cre_redirect_discovery(
     Works identically for BFSDeepCrawlStrategy, DFSDeepCrawlStrategy, and
     BestFirstCrawlingStrategy because all three store their filter on
     ``self.filter_chain``.
+
+    Args:
+        allow_news: When True, news/blog URLs are not filtered out.
     """
     try:
         from crawl4ai.deep_crawling.cre_redirect import discover_all_redirect_domains
@@ -185,26 +200,20 @@ async def _apply_cre_redirect_discovery(
             allow_pdf_bypass=True,
         )
 
-        # Preserve any existing non-domain filters in the chain
-        existing_filters = []
-        if hasattr(strategy, "filter_chain") and strategy.filter_chain:
-            for f in getattr(strategy.filter_chain, "_filters", []):
-                if not isinstance(f, CREDomainScopingFilter):
-                    existing_filters.append(f)
-
-        # Standard CRE order: valid-page → domain-scope → news
-        new_chain = FilterChain([
-            CREValidPageFilter(),
-            domain_filter,
-            CRENewsFilter(),
-        ])
+        # Standard CRE order: valid-page → domain-scope → (news filter unless allow_news)
+        chain_filters = [CREValidPageFilter(), domain_filter]
+        if not allow_news:
+            chain_filters.append(CRENewsFilter())
+        new_chain = FilterChain(chain_filters)
         strategy.filter_chain = new_chain
 
         if verbose:
+            news_label = "news included" if allow_news else "CRENews"
             click.echo(
                 f"[CRE] ✅ Final URL : {rr.final_url}\n"
                 f"[CRE] 🌐 All domains: {sorted(rr.all_domains)}\n"
-                f"[CRE] 🔗 Filter chain patched on {type(strategy).__name__}"
+                f"[CRE] 🔗 Filter chain patched on {type(strategy).__name__} "
+                f"(CREValidPage → CREDomainScoping → {news_label})"
             )
 
     except ImportError as ie:
@@ -247,7 +256,10 @@ async def run_crawler(
     if cre_options and cre_options.get("redirect_discovery"):
         strategy = getattr(crawler_cfg, "deep_crawl_strategy", None)
         if strategy is not None:
-            await _apply_cre_redirect_discovery(url, strategy, verbose)
+            await _apply_cre_redirect_discovery(
+                url, strategy, verbose,
+                allow_news=cre_options.get("allow_news", False),
+            )
 
     async with AsyncWebCrawler(config=browser_cfg) as crawler:
         try:
@@ -1128,12 +1140,17 @@ def cdp_cmd(user_data_dir: Optional[str], port: int, browser_type: str, headless
                    "Wires up CREKeywordRelevanceScorer + CRENewsDeprioritizationScorer + "
                    "CREPageTypePriorityScorer and a domain-scoping filter so the crawl "
                    "prioritises investment-criteria pages over news/contact/admin URLs.")
+@click.option("--include-news", "include_news", is_flag=True, default=False,
+              help="When --cre is active, also crawl news/blog/press pages instead of "
+                   "filtering them out.  Without --cre this flag has no effect.")
 @click.option("--json-ensure-ascii/--no-json-ensure-ascii", default=None, help="Escape non-ASCII characters in JSON output (default: from global config)")
+@click.option("--no-html", "no_html", is_flag=True, default=False,
+              help="Strip HTML fields (html, cleaned_html, fit_html) from JSON output to reduce file size.")
 def crawl_cmd(url: str, browser_config: str, crawler_config: str, filter_config: str,
            extraction_config: str, json_extract: str, schema: str, browser: Dict, crawler: Dict,
            output: str, output_file: str, bypass_cache: bool, question: str, verbose: bool, profile: str,
-           deep_crawl: str, max_pages: int, max_depth: int, cre_scoring: bool,
-           json_ensure_ascii: Optional[bool]):
+           deep_crawl: str, max_pages: int, max_depth: int, cre_scoring: bool, include_news: bool,
+           json_ensure_ascii: Optional[bool], no_html: bool):
     """Crawl a website and extract content
 
     Simple Usage:
@@ -1293,12 +1310,20 @@ Always return valid, properly formatted JSON."""
                     from crawl4ai.deep_crawling.cre_scorers import build_cre_composite_scorer
 
                     _base_domain  = _urlparse(url).hostname or url
-                    _filter_chain = build_cre_filter_chain(base_domain=_base_domain)
+                    _filter_chain = build_cre_filter_chain(
+                        base_domain=_base_domain,
+                        allow_news=include_news,
+                    )
                     _scorer       = build_cre_composite_scorer()
                     # Signal run_crawler to perform async redirect discovery
-                    _cre_options  = {"redirect_discovery": True}
+                    _cre_options  = {"redirect_discovery": True, "allow_news": include_news}
 
                     if verbose:
+                        _news_filter_label = (
+                            "news included (--include-news)"
+                            if include_news
+                            else "CRENews (skips news/blog URLs)"
+                        )
                         console.print(
                             f"[cyan]CRE scoring enabled[/cyan] — "
                             f"seed domain=[bold]{_base_domain}[/bold]"
@@ -1306,7 +1331,7 @@ Always return valid, properly formatted JSON."""
                         console.print(
                             "  Scorers : CREKeywordRelevance(w=0.4) + "
                             "CRENewsDeprioritization(w=0.3) + CREPageTypePriority(w=0.3)\n"
-                            "  Filters : CREValidPage → CREDomainScoping (redirect-aware) → CRENews"
+                            f"  Filters : CREValidPage → CREDomainScoping (redirect-aware) → {_news_filter_label}"
                         )
                 except ImportError as _ie:
                     console.print(
@@ -1436,13 +1461,17 @@ Always return valid, properly formatted JSON."""
             return
         
         # Handle output
+        def _dump(r):
+            d = r.model_dump()
+            return _strip_html(d) if no_html else d
+
         if not output_file:
             if output == "all":
                 if isinstance(result, list):
-                    output_data = [r.model_dump() for r in all_results]
+                    output_data = [_dump(r) for r in all_results]
                     click.echo(json.dumps(output_data, indent=2, ensure_ascii=ensure_ascii))
                 else:
-                    click.echo(json.dumps(main_result.model_dump(), indent=2, ensure_ascii=ensure_ascii))
+                    click.echo(json.dumps(_dump(main_result), indent=2, ensure_ascii=ensure_ascii))
             elif output == "json":
                 print(main_result.extracted_content)
                 extracted_items = json.loads(main_result.extracted_content)
@@ -1468,10 +1497,10 @@ Always return valid, properly formatted JSON."""
             if output == "all":
                 with open(output_file, "w", encoding="utf-8") as f:
                     if isinstance(result, list):
-                        output_data = [r.model_dump() for r in all_results]
+                        output_data = [_dump(r) for r in all_results]
                         f.write(json.dumps(output_data, indent=2, ensure_ascii=ensure_ascii))
                     else:
-                        f.write(json.dumps(main_result.model_dump(), indent=2, ensure_ascii=ensure_ascii))
+                        f.write(json.dumps(_dump(main_result), indent=2, ensure_ascii=ensure_ascii))
             elif output == "json":
                 with open(output_file, "w", encoding="utf-8") as f:
                     f.write(main_result.extracted_content)

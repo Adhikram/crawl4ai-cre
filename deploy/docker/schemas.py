@@ -105,3 +105,45 @@ class WebhookPayload(BaseModel):
     urls: List[str]
     error: Optional[str] = None
     data: Optional[Dict] = None  # Included only if webhook_data_in_payload=True
+
+
+class CRECrawlRequest(BaseModel):
+    """
+    Simple, JS-friendly request for a CRE-optimised deep crawl.
+
+    All CRE behaviour (stealth browser, anti-bot timing, domain-scoping
+    filter, keyword/news/page-type scorer) is applied automatically — no
+    complex type/params JSON required.
+    """
+    url: str = Field(
+        ...,
+        description="Seed URL to start the deep crawl from (http/https).",
+    )
+    strategy: str = Field(
+        "dfs",
+        description="Traversal strategy: 'dfs' (default), 'bfs', or 'best-first'.",
+    )
+    max_pages: int = Field(
+        500,
+        ge=1,
+        le=5000,
+        description="Hard cap on the total number of pages crawled.",
+    )
+    max_depth: int = Field(
+        10,
+        ge=1,
+        le=20,
+        description="Maximum link-hop depth from the seed URL.",
+    )
+    include_news: bool = Field(
+        False,
+        description="When False (default) news/blog/press URLs are skipped.",
+    )
+    no_html: bool = Field(
+        True,
+        description="Strip raw HTML fields from each result to shrink the response.",
+    )
+    webhook_config: Optional[WebhookConfig] = Field(
+        None,
+        description="Optional webhook for async job notifications (used by /crawl/cre/job).",
+    )
