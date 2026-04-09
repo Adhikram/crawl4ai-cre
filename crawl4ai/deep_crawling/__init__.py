@@ -11,7 +11,7 @@ from .filters import (
     URLPatternFilter,
     FilterStats,
     ContentRelevanceFilter,
-    SEOFilter
+    SEOFilter,
 )
 from .scorers import (
     KeywordRelevanceScorer,
@@ -20,15 +20,32 @@ from .scorers import (
     DomainAuthorityScorer,
     FreshnessScorer,
     PathDepthScorer,
-    ContentTypeScorer
+    ContentTypeScorer,
+)
+
+# CRE (Commercial Real Estate) extensions — ported from anax/dash fetchwebsite.ts
+from .cre_filters import (
+    CREValidPageFilter,
+    CRENewsFilter,
+    CRERealEstateRelevanceFilter,
+    CREDomainScopingFilter,
+    build_cre_filter_chain,
+)
+from .cre_scorers import (
+    CREKeywordRelevanceScorer,
+    CRENewsDeprioritizationScorer,
+    CREPageTypePriorityScorer,
+    build_cre_composite_scorer,
 )
 
 __all__ = [
+    # Base strategies
     "DeepCrawlDecorator",
     "DeepCrawlStrategy",
     "BFSDeepCrawlStrategy",
     "BestFirstCrawlingStrategy",
     "DFSDeepCrawlStrategy",
+    # Generic filters
     "FilterChain",
     "ContentTypeFilter",
     "DomainFilter",
@@ -37,6 +54,7 @@ __all__ = [
     "FilterStats",
     "ContentRelevanceFilter",
     "SEOFilter",
+    # Generic scorers
     "KeywordRelevanceScorer",
     "URLScorer",
     "CompositeScorer",
@@ -44,4 +62,15 @@ __all__ = [
     "FreshnessScorer",
     "PathDepthScorer",
     "ContentTypeScorer",
+    # CRE filters
+    "CREValidPageFilter",
+    "CRENewsFilter",
+    "CRERealEstateRelevanceFilter",
+    "CREDomainScopingFilter",
+    "build_cre_filter_chain",
+    # CRE scorers
+    "CREKeywordRelevanceScorer",
+    "CRENewsDeprioritizationScorer",
+    "CREPageTypePriorityScorer",
+    "build_cre_composite_scorer",
 ]
