@@ -1,0 +1,35 @@
+# docker-compose.dev.yml — Development override
+#
+# Mounts your local source into the running container so changes to
+# crawl4ai/ and deploy/docker/ are reflected without rebuilding the image.
+#
+# Usage (first time — build image once, then start with mounts):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# After that (code changes only — no rebuild needed):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Restart server after changes (gunicorn picks up new code):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml restart crawl4ai
+
+services:
+  crawl4ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USE_LOCAL: "true"          # install from ./  at build time
+
+    environment:
+      # Prepend the repo root so Python finds ./crawl4ai before site-packages
+      PYTHONPATH: /local
+
+    volumes:
+      - /dev/shm:/dev/shm          # Chromium shared memory (required)
+
+      # Local repo root  →  /local  (makes  `import crawl4ai`  use your source)
+      - .:/local:ro
+
+      # Server code  →  /app  (api.py, server.py, job.py, schemas.py, etc.)
+      # Changes here are live after a container restart.
+      - ./deploy/docker:/app
