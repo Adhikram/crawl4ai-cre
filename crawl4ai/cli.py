@@ -1461,7 +1461,14 @@ Always return valid, properly formatted JSON."""
             return
         
         # Handle output
+        # When --cre is active, use the canonical CRE projection so the CLI
+        # and API always emit the same shape:
+        #   url, success, parent_url, crawl_depth, markdown, media, links,
+        #   metadata, rank_factors
         def _dump(r):
+            if cre_scoring:
+                from crawl4ai.deep_crawling.cre_filters import project_cre_result
+                return project_cre_result(r, seed_url=url)
             d = r.model_dump()
             return _strip_html(d) if no_html else d
 
@@ -1479,7 +1486,6 @@ Always return valid, properly formatted JSON."""
 
             elif output in ["markdown", "md"]:
                 if isinstance(result, list):
-                    # Combine markdown from all crawled pages for deep crawl
                     for r in all_results:
                         click.echo(f"\n\n{'='*60}\n# {r.url}\n{'='*60}\n\n")
                         click.echo(r.markdown.raw_markdown)
@@ -1487,7 +1493,6 @@ Always return valid, properly formatted JSON."""
                     click.echo(main_result.markdown.raw_markdown)
             elif output in ["markdown-fit", "md-fit"]:
                 if isinstance(result, list):
-                    # Combine fit markdown from all crawled pages for deep crawl
                     for r in all_results:
                         click.echo(f"\n\n{'='*60}\n# {r.url}\n{'='*60}\n\n")
                         click.echo(r.markdown.fit_markdown)
@@ -1507,7 +1512,6 @@ Always return valid, properly formatted JSON."""
             elif output in ["markdown", "md"]:
                 with open(output_file, "w", encoding="utf-8") as f:
                     if isinstance(result, list):
-                        # Combine markdown from all crawled pages for deep crawl
                         for r in all_results:
                             f.write(f"\n\n{'='*60}\n# {r.url}\n{'='*60}\n\n")
                             f.write(r.markdown.raw_markdown)
@@ -1516,7 +1520,6 @@ Always return valid, properly formatted JSON."""
             elif output in ["markdown-fit", "md-fit"]:
                 with open(output_file, "w", encoding="utf-8") as f:
                     if isinstance(result, list):
-                        # Combine fit markdown from all crawled pages for deep crawl
                         for r in all_results:
                             f.write(f"\n\n{'='*60}\n# {r.url}\n{'='*60}\n\n")
                             f.write(r.markdown.fit_markdown)

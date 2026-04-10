@@ -24,6 +24,7 @@ from api import (
     handle_stream_crawl_request, handle_crawl_request,
     handle_cre_crawl_request, handle_cre_stream_crawl_request,
     stream_results,
+    _project_cre_result,
 )
 from schemas import (
     CrawlRequestWithHooks,
@@ -795,7 +796,7 @@ async def crawl_cre_stream(
         include_news=body.include_news,
     )
 
-    no_html = body.no_html
+    seed_url = body.url
 
     async def _cre_stream():
         import json as _json
@@ -804,16 +805,7 @@ async def crawl_cre_stream(
         try:
             async for result in gen:
                 try:
-                    d = result.model_dump()
-                    if d.get("pdf") is not None:
-                        from base64 import b64encode
-                        d["pdf"] = b64encode(d["pdf"]).decode()
-                    if no_html:
-                        for k in ("html", "cleaned_html", "fit_html"):
-                            d.pop(k, None)
-                        md = d.get("markdown")
-                        if isinstance(md, dict):
-                            md.pop("fit_html", None)
+                    d = _project_cre_result(result, seed_url)
                     yield (_json.dumps(d, default=datetime_handler) + "\n").encode()
                 except Exception as e:
                     yield (_json.dumps({"error": str(e), "url": getattr(result, "url", "unknown")}) + "\n").encode()

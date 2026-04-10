@@ -937,14 +937,15 @@ def _build_cre_configs(
     return browser_cfg, crawler_cfg
 
 
-def _strip_html(result_dict: dict) -> dict:
-    """Remove raw HTML fields to reduce payload size."""
-    for key in ("html", "cleaned_html", "fit_html"):
-        result_dict.pop(key, None)
-    md = result_dict.get("markdown")
-    if isinstance(md, dict):
-        md.pop("fit_html", None)
-    return result_dict
+def _project_cre_result(r, seed_url: str) -> dict:
+    """
+    Thin wrapper around :func:`~crawl4ai.deep_crawling.cre_filters.project_cre_result`.
+
+    Delegates to the canonical implementation in ``cre_filters`` so the API
+    and CLI always produce identical output.
+    """
+    from crawl4ai.deep_crawling.cre_filters import project_cre_result
+    return project_cre_result(r, seed_url=seed_url)
 
 
 async def handle_cre_crawl_request(
@@ -955,7 +956,46 @@ async def handle_cre_crawl_request(
     include_news: bool = False,
     no_html: bool = True,
 ) -> dict:
-    """Synchronous CRE deep-crawl — returns all results at once."""
+    """
+    Synchronous CRE deep-crawl — returns all results at once.
+
+    Each result in ``results`` now includes:
+
+    * ``crawl_depth``  — number of URL path segments (proxy for link depth).
+    * ``rank_factors`` — full CRE relevance breakdown::
+
+        {
+          # Base enhanced-ranking scores (mirrors enhanced-page-ranking.ts)
+          "investment_criteria_field_score": ...,
+          "financial_data_density_score":    ...,
+          "business_context_score":          ...,
+          ...
+          "base_total_score":                ...,
+
+          # Detailed breakdowns
+          "investment_criteria_breakdown":   {...},
+          "financial_data_breakdown":        {...},
+          "business_context_breakdown":      {...},
+          "matched_keywords":                {...},
+          "url_analysis":                    {...},
+
+          # CRE-specific ranking layer (mirrors CREPageRankingService.ts)
+          "cre_ranking": {
+            "cre_keyword_score":         ...,
+            "cre_content_type_score":    ...,
+            "cre_investment_info_score": ...,
+            "cre_property_focus_score":  ...,
+            "cre_financial_terms_score": ...,
+            "non_cre_penalty":           ...,
+            "cre_page_type":             "loan_program" | "investment_criteria" | ...,
+            "cre_keywords_found":        [...],
+            "cre_content_indicators":    [...],
+          },
+
+          # Combined CRE-weighted total (mirrors rankPagesForCompany() total_score)
+          "total_score": ...,
+        }
+    """
     from crawler_pool import get_crawler, release_crawler
 
     browser_cfg, crawler_cfg = _build_cre_configs(
@@ -978,14 +1018,7 @@ async def handle_cre_crawl_request(
             else None
         )
 
-        processed = []
-        for r in results:
-            d = r.model_dump() if hasattr(r, "model_dump") else dict(r)
-            if d.get("pdf") and isinstance(d["pdf"], bytes):
-                d["pdf"] = b64encode(d["pdf"]).decode()
-            if no_html:
-                d = _strip_html(d)
-            processed.append(d)
+        processed = [_project_cre_result(r, url) for r in results]
 
         return {
             "success": True,

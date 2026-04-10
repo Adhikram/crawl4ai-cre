@@ -803,82 +803,334 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                     "after_goto", page, context=context, url=url, response=response, config=config
                 )
 
-                # ── PDF document interception ──────────────────────────────
-                # When Playwright navigates to a .pdf URL, Chrome opens its
-                # built-in PDF viewer and page.content() returns viewer HTML
-                # with no text.  Instead, grab the raw bytes from the last
-                # response and convert them to readable HTML via pypdf so
-                # that the markdown generator produces useful output.
-                # This runs AFTER the bot-challenge redirect chain so the
-                # browser session cookies have already been applied.
-                # ── PDF document interception ──────────────────────────────
-                # When Playwright navigates to a .pdf URL the PDF bytes may
-                # already be gone from the CDP response buffer by the time
-                # page.goto() returns (bot-challenge redirect + meta-refresh
-                # flushes it).  Instead we re-fetch the URL through the
-                # browser context's APIRequestContext, which inherits all
-                # session cookies accumulated during prior page visits so
-                # bot-challenge CAPTCHAs are bypassed automatically.
-                _pdf_html_extracted = False
-                _url_is_pdf = url.lower().split("?")[0].split("#")[0].endswith(".pdf")
-                if _url_is_pdf:
+                # ── Document interception (PDF / CSV / Excel / Word / PPT) ─
+                # When Playwright navigates to a document URL (PDF, CSV, XLS,
+                # XLSX, DOC, DOCX, PPT, PPTX) the browser either opens its
+                # built-in viewer (PDF) or triggers a download dialog — in both
+                # cases page.content() returns no useful text.
+                #
+                # Instead we re-fetch the raw bytes through the browser
+                # context's APIRequestContext (inherits session cookies so any
+                # WAF CAPTCHAs solved during prior page visits are reused) and
+                # convert the bytes to structured HTML so the markdown
+                # generator produces readable, indexable output.
+                # ──────────────────────────────────────────────────────────
+                _doc_html_extracted = False
+                _clean_url_lower = url.lower().split("?")[0].split("#")[0]
+                # Determine document type from URL extension
+                _doc_type: str = ""
+                for _ext, _dtype in (
+                    (".pdf",  "pdf"),
+                    (".csv",  "csv"),
+                    (".xlsx", "xlsx"),
+                    (".xls",  "xls"),
+                    (".docx", "docx"),
+                    (".doc",  "doc"),
+                    (".pptx", "pptx"),
+                    (".ppt",  "ppt"),
+                ):
+                    if _clean_url_lower.endswith(_ext):
+                        _doc_type = _dtype
+                        break
+
+                if _doc_type:
                     try:
                         import asyncio as _asyncio
                         import tempfile as _tempfile
                         from pathlib import Path as _Path
-                        from .processors.pdf.processor import NaivePDFProcessorStrategy as _NaivePDF
 
-                        # Re-fetch via the browser context so cookies are sent
+                        # Re-fetch via the browser context so session cookies
+                        # (including WAF tokens) are automatically included.
                         _api_resp = await context.request.get(url)
-                        pdf_bytes = await _api_resp.body()
+                        _doc_bytes = await _api_resp.body()
 
-                        # Sanity-check: real PDFs start with %PDF, not HTML
-                        if pdf_bytes and pdf_bytes[:4] == b"%PDF":
-                            self.logger.info(
-                                message="PDF document detected ({size} bytes) — extracting text for {url}",
-                                tag="PDF",
-                                params={"size": len(pdf_bytes), "url": url[:100]},
+                        if not _doc_bytes:
+                            self.logger.warning(
+                                message="Document URL returned empty body for {url}",
+                                tag="DOC",
+                                params={"url": url[:100]},
                             )
-                            with _tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as _tf:
-                                _tf.write(pdf_bytes)
-                                _tmp_pdf = _tf.name
-                            try:
-                                _pdf_strategy = _NaivePDF(extract_images=False)
-                                _pdf_result = await _asyncio.to_thread(
-                                    _pdf_strategy.process_batch, _Path(_tmp_pdf)
-                                )
-                                # Use _pdf_page to avoid shadowing the Playwright page variable
-                                html = (
-                                    f'<html><head><meta name="pdf-pages"'
-                                    f' content="{len(_pdf_result.pages)}"></head><body>'
-                                    + "".join(
-                                        f'<div class="pdf-page" data-page="{i+1}">'
-                                        f"{_pdf_page.html}</div>"
-                                        for i, _pdf_page in enumerate(_pdf_result.pages)
+                        else:
+                            self.logger.info(
+                                message="{dtype} document detected ({size} bytes) — extracting text for {url}",
+                                tag="DOC",
+                                params={
+                                    "dtype": _doc_type.upper(),
+                                    "size": len(_doc_bytes),
+                                    "url": url[:100],
+                                },
+                            )
+
+                            # ── PDF ──────────────────────────────────────────
+                            if _doc_type == "pdf":
+                                if _doc_bytes[:4] != b"%PDF":
+                                    self.logger.warning(
+                                        message="PDF URL returned non-PDF bytes (header={hdr!r}) for {url}",
+                                        tag="DOC",
+                                        params={
+                                            "hdr": _doc_bytes[:8],
+                                            "url": url[:100],
+                                        },
                                     )
+                                else:
+                                    from .processors.pdf.processor import (
+                                        NaivePDFProcessorStrategy as _NaivePDF,
+                                    )
+                                    with _tempfile.NamedTemporaryFile(
+                                        suffix=".pdf", delete=False
+                                    ) as _tf:
+                                        _tf.write(_doc_bytes)
+                                        _tmp_doc = _tf.name
+                                    try:
+                                        _pdf_strategy = _NaivePDF(extract_images=False)
+                                        _pdf_result = await _asyncio.to_thread(
+                                            _pdf_strategy.process_batch, _Path(_tmp_doc)
+                                        )
+                                        html = (
+                                            f'<html><head><meta name="pdf-pages"'
+                                            f' content="{len(_pdf_result.pages)}"></head><body>'
+                                            + "".join(
+                                                f'<div class="pdf-page" data-page="{_pi+1}">'
+                                                f"{_pp.html}</div>"
+                                                for _pi, _pp in enumerate(_pdf_result.pages)
+                                            )
+                                            + "</body></html>"
+                                        )
+                                        status_code = 200
+                                        response_headers = {"content-type": "text/html"}
+                                        _doc_html_extracted = True
+                                    finally:
+                                        _Path(_tmp_doc).unlink(missing_ok=True)
+
+                            # ── CSV ──────────────────────────────────────────
+                            elif _doc_type == "csv":
+                                import csv as _csv
+                                import io as _io
+                                _text = _doc_bytes.decode("utf-8", errors="replace")
+                                _reader = _csv.reader(_io.StringIO(_text))
+                                _rows = list(_reader)
+                                _rows_html = "".join(
+                                    "<tr>"
+                                    + "".join(
+                                        f"<td>{_cell}</td>" for _cell in _row
+                                    )
+                                    + "</tr>"
+                                    for _row in _rows
+                                )
+                                html = (
+                                    f'<html><head><meta name="csv-rows"'
+                                    f' content="{len(_rows)}"></head>'
+                                    f"<body><table>{_rows_html}</table></body></html>"
+                                )
+                                status_code = 200
+                                response_headers = {"content-type": "text/html"}
+                                _doc_html_extracted = True
+
+                            # ── XLSX ─────────────────────────────────────────
+                            elif _doc_type == "xlsx":
+                                import io as _io
+                                import openpyxl as _openpyxl
+                                _wb = _openpyxl.load_workbook(
+                                    _io.BytesIO(_doc_bytes), read_only=True, data_only=True
+                                )
+                                _sheets_html: list = []
+                                for _sname in _wb.sheetnames:
+                                    _ws = _wb[_sname]
+                                    _rows_html = "".join(
+                                        "<tr>"
+                                        + "".join(
+                                            f"<td>{_cell.value if _cell.value is not None else ''}</td>"
+                                            for _cell in _row
+                                        )
+                                        + "</tr>"
+                                        for _row in _ws.iter_rows()
+                                    )
+                                    _sheets_html.append(
+                                        f'<div class="sheet" data-sheet="{_sname}">'
+                                        f"<table>{_rows_html}</table></div>"
+                                    )
+                                _wb.close()
+                                html = (
+                                    f'<html><head><meta name="xlsx-sheets"'
+                                    f' content="{len(_wb.sheetnames)}"></head>'
+                                    f"<body>{''.join(_sheets_html)}</body></html>"
+                                )
+                                status_code = 200
+                                response_headers = {"content-type": "text/html"}
+                                _doc_html_extracted = True
+
+                            # ── XLS (legacy binary format) ───────────────────
+                            elif _doc_type == "xls":
+                                import xlrd as _xlrd
+                                _wb = _xlrd.open_workbook(file_contents=_doc_bytes)
+                                _sheets_html = []
+                                for _si in range(_wb.nsheets):
+                                    _ws = _wb.sheet_by_index(_si)
+                                    _rows_html = "".join(
+                                        "<tr>"
+                                        + "".join(
+                                            f"<td>{_ws.cell_value(_ri, _ci)}</td>"
+                                            for _ci in range(_ws.ncols)
+                                        )
+                                        + "</tr>"
+                                        for _ri in range(_ws.nrows)
+                                    )
+                                    _sheets_html.append(
+                                        f'<div class="sheet" data-sheet="{_ws.name}">'
+                                        f"<table>{_rows_html}</table></div>"
+                                    )
+                                html = (
+                                    f'<html><head><meta name="xls-sheets"'
+                                    f' content="{_wb.nsheets}"></head>'
+                                    f"<body>{''.join(_sheets_html)}</body></html>"
+                                )
+                                status_code = 200
+                                response_headers = {"content-type": "text/html"}
+                                _doc_html_extracted = True
+
+                            # ── DOCX ─────────────────────────────────────────
+                            elif _doc_type == "docx":
+                                import io as _io
+                                import docx as _docx
+                                _document = _docx.Document(_io.BytesIO(_doc_bytes))
+                                _parts: list = []
+                                for _para in _document.paragraphs:
+                                    if _para.text.strip():
+                                        _tag = "h2" if _para.style.name.startswith("Heading") else "p"
+                                        _parts.append(f"<{_tag}>{_para.text}</{_tag}>")
+                                for _tbl in _document.tables:
+                                    _rows_html = "".join(
+                                        "<tr>"
+                                        + "".join(
+                                            f"<td>{_cell.text}</td>"
+                                            for _cell in _trow.cells
+                                        )
+                                        + "</tr>"
+                                        for _trow in _tbl.rows
+                                    )
+                                    _parts.append(f"<table>{_rows_html}</table>")
+                                html = (
+                                    "<html><body>"
+                                    + "".join(_parts)
                                     + "</body></html>"
                                 )
                                 status_code = 200
                                 response_headers = {"content-type": "text/html"}
-                                _pdf_html_extracted = True
-                            finally:
-                                _Path(_tmp_pdf).unlink(missing_ok=True)
-                        else:
-                            self.logger.warning(
-                                message="PDF URL returned non-PDF bytes (len={size}, header={hdr!r}) — cookies may not be set yet",
-                                tag="PDF",
-                                params={
-                                    "size": len(pdf_bytes) if pdf_bytes else 0,
-                                    "hdr": (pdf_bytes[:8] if pdf_bytes else b""),
-                                },
-                            )
-                    except Exception as _pdf_err:
+                                _doc_html_extracted = True
+
+                            # ── DOC (legacy binary — best-effort via python-docx) ─
+                            elif _doc_type == "doc":
+                                import io as _io
+                                import tempfile as _tempfile
+                                try:
+                                    import docx as _docx
+                                    with _tempfile.NamedTemporaryFile(
+                                        suffix=".doc", delete=False
+                                    ) as _tf:
+                                        _tf.write(_doc_bytes)
+                                        _tmp_doc = _tf.name
+                                    try:
+                                        _document = _docx.Document(_tmp_doc)
+                                        _parts = [
+                                            f"<p>{_para.text}</p>"
+                                            for _para in _document.paragraphs
+                                            if _para.text.strip()
+                                        ]
+                                        html = (
+                                            "<html><body>"
+                                            + "".join(_parts)
+                                            + "</body></html>"
+                                        )
+                                        status_code = 200
+                                        response_headers = {"content-type": "text/html"}
+                                        _doc_html_extracted = True
+                                    finally:
+                                        _Path(_tmp_doc).unlink(missing_ok=True)
+                                except Exception:
+                                    self.logger.warning(
+                                        message="Legacy .doc extraction failed for {url} — old binary format not supported; page will render as-is",
+                                        tag="DOC",
+                                        params={"url": url[:100]},
+                                    )
+
+                            # ── PPTX ─────────────────────────────────────────
+                            elif _doc_type == "pptx":
+                                import io as _io
+                                from pptx import Presentation as _Presentation
+                                _prs = _Presentation(_io.BytesIO(_doc_bytes))
+                                _slides_html: list = []
+                                for _si, _slide in enumerate(_prs.slides):
+                                    _texts = [
+                                        _shape.text
+                                        for _shape in _slide.shapes
+                                        if hasattr(_shape, "text") and _shape.text.strip()
+                                    ]
+                                    _slides_html.append(
+                                        f'<div class="slide" data-slide="{_si + 1}">'
+                                        + "<br>".join(_texts)
+                                        + "</div>"
+                                    )
+                                html = (
+                                    f'<html><head><meta name="pptx-slides"'
+                                    f' content="{len(_prs.slides)}"></head>'
+                                    f"<body>{''.join(_slides_html)}</body></html>"
+                                )
+                                status_code = 200
+                                response_headers = {"content-type": "text/html"}
+                                _doc_html_extracted = True
+
+                            # ── PPT (legacy binary — best-effort) ────────────
+                            elif _doc_type == "ppt":
+                                import io as _io
+                                try:
+                                    from pptx import Presentation as _Presentation
+                                    with _tempfile.NamedTemporaryFile(
+                                        suffix=".ppt", delete=False
+                                    ) as _tf:
+                                        _tf.write(_doc_bytes)
+                                        _tmp_doc = _tf.name
+                                    try:
+                                        _prs = _Presentation(_tmp_doc)
+                                        _slides_html = []
+                                        for _si, _slide in enumerate(_prs.slides):
+                                            _texts = [
+                                                _shape.text
+                                                for _shape in _slide.shapes
+                                                if hasattr(_shape, "text") and _shape.text.strip()
+                                            ]
+                                            _slides_html.append(
+                                                f'<div class="slide" data-slide="{_si + 1}">'
+                                                + "<br>".join(_texts)
+                                                + "</div>"
+                                            )
+                                        html = (
+                                            f'<html><head><meta name="ppt-slides"'
+                                            f' content="{len(_prs.slides)}"></head>'
+                                            f"<body>{''.join(_slides_html)}</body></html>"
+                                        )
+                                        status_code = 200
+                                        response_headers = {"content-type": "text/html"}
+                                        _doc_html_extracted = True
+                                    finally:
+                                        _Path(_tmp_doc).unlink(missing_ok=True)
+                                except Exception:
+                                    self.logger.warning(
+                                        message="Legacy .ppt extraction failed for {url} — old binary format not supported; page will render as-is",
+                                        tag="DOC",
+                                        params={"url": url[:100]},
+                                    )
+
+                    except Exception as _doc_err:
                         self.logger.warning(
-                            message="PDF text extraction failed for {url}: {err}",
-                            tag="PDF",
-                            params={"url": url[:100], "err": str(_pdf_err)},
+                            message="{dtype} extraction failed for {url}: {err}",
+                            tag="DOC",
+                            params={
+                                "dtype": _doc_type.upper(),
+                                "url": url[:100],
+                                "err": str(_doc_err),
+                            },
                         )
-                # ── end PDF interception ───────────────────────────────────
+                # ── end document interception ──────────────────────────────
 
             else:
                 status_code = 200
@@ -1128,9 +1380,9 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
 
             # --- Phase 5: HTML capture ---
 
-            if _pdf_html_extracted:
-                # HTML was already set by the PDF interception block above;
-                # skip page.content() which would overwrite it with PDF-viewer HTML.
+            if _doc_html_extracted:
+                # HTML was already set by the document interception block above;
+                # skip page.content() which would overwrite it with viewer HTML.
                 pass
             elif config.flatten_shadow_dom:
                 # Use JS to serialize the full DOM including shadow roots
