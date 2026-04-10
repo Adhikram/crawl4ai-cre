@@ -302,3 +302,5 @@ MEMORY.md
 
 # Handoff files
 HANDOFF-*.md
+
+.cursor/

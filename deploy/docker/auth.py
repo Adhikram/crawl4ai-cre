@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from jwt import JWT, jwk_from_dict
@@ -11,7 +12,21 @@ import base64
 
 instance = JWT()
 security = HTTPBearer(auto_error=False)
-SECRET_KEY = os.environ.get("SECRET_KEY", "mysecret")
+
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+if not SECRET_KEY:
+    print(
+        "[FATAL] SECRET_KEY environment variable is not set. "
+        "Generate one with: openssl rand -hex 32\n"
+        "Set it in your .env or docker-compose environment before starting.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+# API_TOKEN is the pre-shared secret callers must supply to obtain a JWT.
+# Loaded here so it can be referenced without importing config in auth.py.
+API_TOKEN = os.environ.get("API_TOKEN", "")
+
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 def get_jwk_from_secret(secret: str):

@@ -43,11 +43,16 @@ rate_limiting:
 #   - Set SECRET_KEY environment variable to a secure random value
 #   - Set CRAWL4AI_HOOKS_ENABLED=true only if you need hooks (RCE risk)
 security:
-  enabled: false
-  jwt_enabled: false
-  api_token: ""  # When set, /token endpoint requires this secret to issue JWTs
+  enabled: true
+  jwt_enabled: true
+  # REQUIRED: set API_TOKEN env var — callers must send this to obtain a JWT.
+  # Generate with: openssl rand -hex 32
+  api_token: ""  # Overridden by API_TOKEN environment variable (see server startup)
   https_redirect: false
   trusted_hosts: ["*"]
+  # Only emails from these domains can obtain tokens.
+  # Empty list = allow any domain with valid DNS MX records (not recommended for production).
+  allowed_email_domains: ["anaxrep.com"]
   headers:
     x_content_type_options: "nosniff"
     x_frame_options: "DENY"

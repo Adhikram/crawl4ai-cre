@@ -293,10 +293,13 @@ def get_llm_base_url(config: Dict, provider: Optional[str] = None) -> Optional[s
     return os.environ.get("LLM_BASE_URL")
 
 
-def verify_email_domain(email: str) -> bool:
+def verify_email_domain(email: str, allowed_domains: list = None) -> bool:
     try:
         domain = email.split('@')[1]
-        # Try to resolve MX records for the domain.
+        # If an explicit whitelist is configured, check against it first (no DNS needed).
+        if allowed_domains:
+            return domain in allowed_domains
+        # Fallback: accept any domain that has valid MX records.
         records = dns.resolver.resolve(domain, 'MX')
         return True if records else False
     except Exception as e:
