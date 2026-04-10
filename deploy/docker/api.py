@@ -887,6 +887,40 @@ async def handle_crawl_job(
     return {"task_id": task_id}
 
 
+async def handle_list_active_cre_jobs(redis: aioredis.Redis) -> dict:
+    """Scan Redis for all CRE crawl tasks and return their status + url.
+
+    Scans for keys matching ``task:cre_*`` using SCAN (non-blocking, cursor-
+    based).  Returns every task regardless of status so the caller can decide
+    which ones to act on (processing / completed / failed).
+
+    Returns:
+        {"jobs": [{"task_id": str, "status": str, "url": str,
+                   "created_at": str, "error": str}], "total": int}
+    """
+    jobs: list[dict] = []
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="task:cre_*", count=200)
+        for raw_key in keys:
+            key_str: str = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else raw_key
+            task_id = key_str.removeprefix("task:")
+            raw_task = await redis.hgetall(raw_key)
+            if not raw_task:
+                continue
+            task = decode_redis_hash(raw_task)
+            jobs.append({
+                "task_id": task_id,
+                "status": task.get("status", "unknown"),
+                "url": task.get("url", ""),
+                "created_at": task.get("created_at", ""),
+                "error": task.get("error", ""),
+            })
+        if cursor == 0:
+            break
+    return {"jobs": jobs, "total": len(jobs)}
+
+
 # ─────────────────────────────────────────────────────────────
 #  CRE deep-crawl helpers
 # ─────────────────────────────────────────────────────────────

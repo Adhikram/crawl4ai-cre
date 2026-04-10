@@ -13,6 +13,7 @@ from api import (
     handle_crawl_job,
     handle_cre_crawl_job,
     handle_task_status,
+    handle_list_active_cre_jobs,
 )
 from auth import security
 from schemas import WebhookConfig, CRECrawlRequest
@@ -172,3 +173,21 @@ async def cre_crawl_job_status(
 ):
     """Poll the status/result of a CRE deep-crawl job."""
     return await handle_task_status(_redis, task_id, base_url=str(request.base_url))
+
+
+@router.get("/crawl/cre/jobs/active")
+async def cre_crawl_jobs_active(
+    _td: Dict = Depends(_late_token),
+):
+    """List all CRE crawl jobs currently tracked in Redis.
+
+    Returns every task:cre_* key regardless of status (processing / completed /
+    failed).  Use this endpoint to reconcile external DB state with what Docker
+    is actually running — e.g. to recover from a dispatch that wrote to Docker
+    but crashed before inserting the crawl4ai_jobs row.
+
+    Response:
+        {"jobs": [{"task_id", "status", "url", "created_at", "error"}],
+         "total": int}
+    """
+    return await handle_list_active_cre_jobs(_redis)
