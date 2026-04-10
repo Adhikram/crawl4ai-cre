@@ -5,7 +5,7 @@ app:
   host: "0.0.0.0"
   port: 11235
   reload: False
-  workers: 1
+  workers: 4        # 4 gunicorn/uvicorn workers (async IO-bound; 18 cores available)
   timeout_keep_alive: 300
 
 # Default LLM Configuration
@@ -60,32 +60,36 @@ security:
     strict_transport_security: "max-age=63072000; includeSubDomains"
 
 # Crawler Configuration
+# Machine: 94GB RAM, 18 CPU cores
+# Each Chromium browser ~300-500MB RSS in text_mode (no GPU, no images)
+# Budget: 88GB container limit x 85% threshold = ~75GB usable before throttle
+# At ~400MB/browser -> ~187 browsers theoretical max; 150 is a safe ceiling
 crawler:
   base_config:
     simulate_user: true
-  memory_threshold_percent: 95.0
+  memory_threshold_percent: 85.0   # Throttle at 85% of 88GB ~75GB; leaves buffer before OOM
   rate_limiter:
     enabled: true
-    base_delay: [1.0, 2.0]
+    base_delay: [0.5, 1.0]         # Reduced from [1.0, 2.0] — big machine handles faster pacing
   timeouts:
-    stream_init: 30.0  # Timeout for stream initialization
-    batch_process: 300.0  # Timeout for batch processing
+    stream_init: 30.0
+    batch_process: 300.0
   pool:
-    max_pages: 40                          # ← GLOBAL_SEM permits
-    idle_ttl_sec: 300                     # ← 30 min janitor cutoff
+    max_pages: 150                  # GLOBAL_SEM concurrent browser pages (was 40)
+    idle_ttl_sec: 600               # Keep warm browsers alive longer (was 300s)
   browser:
     kwargs:
       headless: true
       text_mode: true
     extra_args:
-      # - "--single-process"
       - "--no-sandbox"
-      - "--disable-dev-shm-usage"
+      - "--disable-dev-shm-usage"   # Use /tmp instead of /dev/shm (reliable in Docker)
       - "--disable-gpu"
       - "--disable-software-rasterizer"
       - "--disable-web-security"
       - "--allow-insecure-localhost"
       - "--ignore-certificate-errors"
+      - "--js-flags=--max-old-space-size=512"  # Cap V8 heap per tab to 512MB
 
 # Logging Configuration
 logging:

@@ -17,13 +17,14 @@ x-base-config: &base-config
   #   - GEMINI_API_KEY=${GEMINI_API_KEY:-}
   #   - LLM_PROVIDER=${LLM_PROVIDER:-}  # Optional: Override default provider (e.g., "anthropic/claude-3-opus")
   volumes:
-    - /dev/shm:/dev/shm  # Chromium performance
+    - /dev/shm:/dev/shm  # Chromium shared memory (host /dev/shm = ~47GB on this machine)
   deploy:
     resources:
       limits:
-        memory: 4G
+        memory: 88G      # 94GB machine — leave ~6GB headroom for OS/kernel
+        cpus: '16'       # 18 core machine — leave 2 cores for OS scheduling
       reservations:
-        memory: 1G
+        memory: 4G
   restart: unless-stopped
   healthcheck:
     test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
