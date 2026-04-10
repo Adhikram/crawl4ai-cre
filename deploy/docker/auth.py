@@ -81,7 +81,7 @@ def get_token_dependency(config: Dict):
             return verify_token(credentials)
         return jwt_required
     else:
-        return lambda: None
+        return lambda credentials=None: None
 
 
 class TokenRequest(BaseModel):

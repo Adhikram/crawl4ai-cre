@@ -5,6 +5,7 @@ Relies on the existing Redis task helpers in api.py
 
 from typing import Dict, Optional, Callable
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, HttpUrl
 
 from api import (
@@ -13,15 +14,27 @@ from api import (
     handle_cre_crawl_job,
     handle_task_status,
 )
+from auth import security
 from schemas import WebhookConfig, CRECrawlRequest
 
 # ------------- dependency placeholders -------------
 _redis = None        # will be injected from server.py
 _config = None
-_token_dep: Callable = lambda: None  # dummy until injected
+_token_dep: Callable = lambda credentials=None: None  # dummy until injected
 
 # public router
 router = APIRouter()
+
+
+async def _late_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Late-bound token dependency.
+
+    FastAPI resolves the HTTPBearer credentials first, then passes them to
+    whichever _token_dep was injected at startup (jwt_required or no-op).
+    This avoids calling _token_dep() inside a bare lambda, which would bypass
+    FastAPI's DI and hand jwt_required a Depends object instead of real creds.
+    """
+    return _token_dep(credentials)
 
 
 # === init hook called by server.py =========================================
@@ -57,7 +70,7 @@ async def llm_job_enqueue(
         payload: LlmJobPayload,
         background_tasks: BackgroundTasks,
         request: Request,
-        _td: Dict = Depends(lambda: _token_dep()),   # late-bound dep
+        _td: Dict = Depends(_late_token),
 ):
     webhook_config = None
     if payload.webhook_config:
@@ -83,7 +96,7 @@ async def llm_job_enqueue(
 async def llm_job_status(
     request: Request,
     task_id: str,
-    _td: Dict = Depends(lambda: _token_dep())
+    _td: Dict = Depends(_late_token),
 ):
     return await handle_task_status(_redis, task_id, base_url=str(request.base_url))
 
@@ -93,7 +106,7 @@ async def llm_job_status(
 async def crawl_job_enqueue(
         payload: CrawlJobPayload,
         background_tasks: BackgroundTasks,
-        _td: Dict = Depends(lambda: _token_dep()),
+        _td: Dict = Depends(_late_token),
 ):
     webhook_config = None
     if payload.webhook_config:
@@ -114,7 +127,7 @@ async def crawl_job_enqueue(
 async def crawl_job_status(
     request: Request,
     task_id: str,
-    _td: Dict = Depends(lambda: _token_dep())
+    _td: Dict = Depends(_late_token),
 ):
     return await handle_task_status(_redis, task_id, base_url=str(request.base_url))
 
@@ -125,7 +138,7 @@ async def crawl_job_status(
 async def cre_crawl_job_enqueue(
     payload: CRECrawlRequest,
     background_tasks: BackgroundTasks,
-    _td: Dict = Depends(lambda: _token_dep()),
+    _td: Dict = Depends(_late_token),
 ):
     """
     Submit a CRE deep-crawl as a background job.
@@ -155,7 +168,7 @@ async def cre_crawl_job_enqueue(
 async def cre_crawl_job_status(
     request: Request,
     task_id: str,
-    _td: Dict = Depends(lambda: _token_dep()),
+    _td: Dict = Depends(_late_token),
 ):
     """Poll the status/result of a CRE deep-crawl job."""
     return await handle_task_status(_redis, task_id, base_url=str(request.base_url))
