@@ -76,6 +76,7 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 # ────────────────── configuration / logging ──────────────────
 config = load_config()
 setup_logging(config)
+logger = logging.getLogger(__name__)
 
 # Version is imported from crawl4ai package to ensure it stays in sync
 
@@ -118,11 +119,36 @@ AsyncWebCrawler.arun = capped_arun
 # ───────────────────── FastAPI lifespan ──────────────────────
 
 
+async def _flush_stale_processing_tasks():
+    """
+    On every startup, any task:* key still marked 'processing' is orphaned —
+    its background worker died when the previous gunicorn process exited.
+    Mark them 'failed' so callers get a clear status instead of waiting forever.
+    """
+    cursor = 0
+    cleaned = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="task:*", count=100)
+        for key in keys:
+            status = await redis.hget(key, "status")
+            if status and status.decode() == "processing":
+                await redis.hset(key, "status", "failed")
+                await redis.hset(key, "error", "Server restarted while job was in progress")
+                cleaned += 1
+        if cursor == 0:
+            break
+    if cleaned:
+        logger.warning("Startup: marked %d orphaned processing task(s) as failed", cleaned)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     from crawler_pool import init_permanent
     from monitor import MonitorStats
     import monitor as monitor_module
+
+    # Clean up any tasks left in 'processing' state from the previous run
+    await _flush_stale_processing_tasks()
 
     # Initialize monitor
     monitor_module.monitor_stats = MonitorStats(redis)
@@ -312,8 +338,6 @@ app.include_router(init_job_router(redis, config, token_dep))
 # ── monitor router ──────────────────────────────────────────
 from monitor_routes import router as monitor_router
 app.include_router(monitor_router)
-
-logger = logging.getLogger(__name__)
 
 # ──────────────────────── Endpoints ──────────────────────────
 @app.post("/token")
