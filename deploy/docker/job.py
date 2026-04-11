@@ -14,6 +14,7 @@ from api import (
     handle_cre_crawl_job,
     handle_task_status,
     handle_list_active_cre_jobs,
+    handle_list_completed_cre_jobs,
 )
 from auth import security
 from schemas import WebhookConfig, CRECrawlRequest
@@ -171,23 +172,92 @@ async def cre_crawl_job_status(
     task_id: str,
     _td: Dict = Depends(_late_token),
 ):
-    """Poll the status/result of a CRE deep-crawl job."""
-    return await handle_task_status(_redis, task_id, base_url=str(request.base_url))
+    """Poll the status/result of a CRE deep-crawl job.
+
+    This endpoint never auto-deletes the Redis key on read (keep=True).
+    The caller must explicitly acknowledge the job via
+    DELETE /crawl/cre/job/{task_id}/ack once it has safely persisted the
+    result.  This prevents silent data loss when a DB write fails between
+    the poll and the ack.
+    """
+    return await handle_task_status(
+        _redis,
+        task_id,
+        base_url=str(request.base_url),
+        keep=True,
+        config=_config,
+    )
+
+
+@router.delete("/crawl/cre/job/{task_id}/ack", status_code=200)
+async def cre_job_acknowledge(
+    task_id: str,
+    _td: Dict = Depends(_late_token),
+):
+    """Acknowledge a completed CRE job — removes it from Redis.
+
+    Call this AFTER you have successfully written the job result to your own
+    database.  Safe to call multiple times: returns ``acknowledged=false`` if
+    the key no longer exists (already expired or double-acked).
+
+    Workflow::
+
+        task_id = submitCREJob(url)
+        # ...later, in poll cycle...
+        result  = GET /crawl/cre/job/{task_id}     # keep=True, never deletes
+        writeToDatabase(result)                      # your persistence layer
+        DELETE /crawl/cre/job/{task_id}/ack          # explicit delete only on success
+
+    Response:
+        {"acknowledged": bool, "task_id": str}
+    """
+    key = f"task:{task_id}"
+    deleted = await _redis.delete(key)
+    return {"acknowledged": bool(deleted), "task_id": task_id}
 
 
 @router.get("/crawl/cre/jobs/active")
 async def cre_crawl_jobs_active(
     _td: Dict = Depends(_late_token),
 ):
-    """List all CRE crawl jobs currently tracked in Redis.
+    """List all CRE crawl tasks in Redis regardless of status.
 
-    Returns every task:cre_* key regardless of status (processing / completed /
-    failed).  Use this endpoint to reconcile external DB state with what Docker
-    is actually running — e.g. to recover from a dispatch that wrote to Docker
-    but crashed before inserting the crawl4ai_jobs row.
+    Returns every task:cre_* key (processing / completed / failed).
+    Use for reconciliation — not for normal polling (prefer /jobs/completed).
 
     Response:
         {"jobs": [{"task_id", "status", "url", "created_at", "error"}],
          "total": int}
     """
     return await handle_list_active_cre_jobs(_redis)
+
+
+@router.get("/crawl/cre/jobs/completed")
+async def cre_crawl_jobs_completed(
+    limit: int = 500,
+    _td: Dict = Depends(_late_token),
+):
+    """Return lightweight metadata for completed CRE jobs only.
+
+    Unlike /jobs/active this endpoint:
+
+    * Filters to ``status=completed`` entries only.
+    * Does **not** include the result payload — just task_id, url, created_at.
+    * Supports a ``limit`` query parameter (default 500).
+
+    Intended workflow for external poll processors::
+
+        1. GET /crawl/cre/jobs/completed          # cheap: no result blobs
+        2. Match returned task_ids against your DB  # find which ones YOU submitted
+        3. For each unprocessed task_id:
+             GET /crawl/cre/job/{task_id}          # fetch full result on-demand
+             persist result to your DB
+             DELETE /crawl/cre/job/{task_id}/ack   # explicit ack
+
+    This pattern keeps individual responses small and makes every step
+    independently retryable.
+
+    Response:
+        {"jobs": [{"task_id", "status", "url", "created_at"}], "total": int}
+    """
+    return await handle_list_completed_cre_jobs(_redis, limit=limit)

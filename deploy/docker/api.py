@@ -408,9 +408,20 @@ async def handle_task_status(
     task_id: str,
     base_url: str,
     *,
-    keep: bool = False
+    keep: bool = False,
+    config: dict = None,
 ) -> JSONResponse:
-    """Handle task status check requests."""
+    """Handle task status check requests.
+
+    Args:
+        keep:   When True, never auto-delete the Redis key on read. The caller
+                is responsible for deletion via the /ack endpoint after it has
+                safely persisted the result. Use this for CRE jobs polled by
+                external processors so a DB-write failure can be retried.
+        config: Application config dict. When supplied, the configured
+                redis.task_ttl_seconds is honoured for the manual cleanup
+                guard (previously was hardcoded to 3600 s regardless of config).
+    """
     task = await redis.hgetall(f"task:{task_id}")
     if not task:
         raise HTTPException(
@@ -422,8 +433,10 @@ async def handle_task_status(
     response = create_task_response(task, task_id, base_url)
 
     if task["status"] in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-        if not keep and should_cleanup_task(task["created_at"]):
-            await redis.delete(f"task:{task_id}")
+        if not keep:
+            ttl_seconds = get_redis_task_ttl(config) if config else 3600
+            if should_cleanup_task(task["created_at"], ttl_seconds=ttl_seconds):
+                await redis.delete(f"task:{task_id}")
 
     return JSONResponse(response)
 
@@ -918,6 +931,63 @@ async def handle_list_active_cre_jobs(redis: aioredis.Redis) -> dict:
             })
         if cursor == 0:
             break
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+async def handle_list_completed_cre_jobs(
+    redis: aioredis.Redis,
+    limit: int = 500,
+) -> dict:
+    """Return lightweight metadata for *completed* CRE jobs only.
+
+    Difference from ``handle_list_active_cre_jobs``:
+
+    * **Status filter** — returns only ``status=completed`` entries.
+    * **No result blob** — fetches only the metadata fields (status, url,
+      created_at) via ``HMGET`` so the heavy ``result`` field is never
+      deserialised or transmitted.  This keeps the response small even when
+      hundreds of 4-MB result blobs sit in Redis.
+    * **Limit** — stops scanning once ``limit`` completed entries are found.
+
+    Intended use: the external poll processor calls this first to get a cheap
+    list of task IDs that are ready, then fetches each result individually via
+    ``GET /crawl/cre/job/{task_id}`` only for IDs it hasn't yet persisted.
+
+    Returns:
+        {"jobs": [{"task_id": str, "status": "completed", "url": str,
+                   "created_at": str}], "total": int}
+    """
+    jobs: list[dict] = []
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="task:cre_*", count=200)
+        for raw_key in keys:
+            if len(jobs) >= limit:
+                break
+            key_str: str = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else raw_key
+            task_id = key_str.removeprefix("task:")
+
+            # Fetch only lightweight fields — deliberately skip "result"
+            fields = await redis.hmget(raw_key, "status", "url", "created_at")
+            status_b, url_b, created_at_b = fields
+
+            if not status_b:
+                continue
+            status_str: str = status_b.decode("utf-8") if isinstance(status_b, bytes) else status_b
+
+            if status_str != TaskStatus.COMPLETED:
+                continue
+
+            jobs.append({
+                "task_id": task_id,
+                "status": status_str,
+                "url": url_b.decode("utf-8") if url_b else "",
+                "created_at": created_at_b.decode("utf-8") if created_at_b else "",
+            })
+
+        if cursor == 0 or len(jobs) >= limit:
+            break
+
     return {"jobs": jobs, "total": len(jobs)}
 
 

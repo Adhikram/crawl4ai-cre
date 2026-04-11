@@ -23,7 +23,7 @@ redis:
   port: 6379
   db: 0
   password: ""
-  task_ttl_seconds: 3600  # TTL for task data (1 hour default)
+  task_ttl_seconds: 172800  # TTL for task data (2 days — long enough for slow poll cycles)
   ssl: False
   ssl_cert_reqs: None
   ssl_ca_certs: None

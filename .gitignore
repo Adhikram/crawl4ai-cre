@@ -304,3 +304,6 @@ MEMORY.md
 HANDOFF-*.md
 
 .cursor/
+.agent/
+.augment/
+.codex/
