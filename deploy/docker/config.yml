@@ -5,7 +5,7 @@ app:
   host: "0.0.0.0"
   port: 11235
   reload: False
-  workers: 4        # 4 gunicorn/uvicorn workers (async IO-bound; 18 cores available)
+  workers: 4        # NOTE: this value is NOT read by gunicorn — worker count is set in supervisord.conf --workers flag
   timeout_keep_alive: 300
 
 # Default LLM Configuration
