@@ -359,8 +359,12 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
                     # CRE: update stateful news-threshold filter counter
                     self._notify_threshold_filters(url)
 
+                    # Use redirected_url as base for relative href resolution
+                    # (e.g. barings.com → barings.com/guest: links should resolve
+                    # against /guest, not /).
+                    effective_source = getattr(result, "redirected_url", None) or url
                     # Link discovery will handle the max pages limit internally
-                    await self.link_discovery(result, url, depth, visited, next_level, depths)
+                    await self.link_discovery(result, effective_source, depth, visited, next_level, depths)
 
                     # Capture state after EACH URL processed (if callback set)
                     if self._on_state_change:
@@ -479,7 +483,11 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
                     self._notify_threshold_filters(url)
 
                     # Link discovery will handle the max pages limit internally
-                    await self.link_discovery(result, url, depth, visited, next_level, depths)
+                    # Use redirected_url (final URL after browser redirect) so that
+                    # relative hrefs are resolved against the actual page, not the
+                    # redirect source (e.g. barings.com → barings.com/guest).
+                    effective_source = getattr(result, "redirected_url", None) or url
+                    await self.link_discovery(result, effective_source, depth, visited, next_level, depths)
 
                     # Capture state after EACH URL processed (if callback set)
                     if self._on_state_change:

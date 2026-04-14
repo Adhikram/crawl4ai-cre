@@ -116,7 +116,8 @@ class DFSDeepCrawlStrategy(BFSDeepCrawlStrategy):
                     
                     # Only discover links from successful crawls
                     new_links: List[Tuple[str, Optional[str]]] = []
-                    await self.link_discovery(result, url, depth, visited, new_links, depths)
+                    effective_source = getattr(result, "redirected_url", None) or url
+                    await self.link_discovery(result, effective_source, depth, visited, new_links, depths)
                     
                     # Push new links in reverse order so the first discovered is processed next.
                     for new_url, new_parent in reversed(new_links):
@@ -245,7 +246,8 @@ class DFSDeepCrawlStrategy(BFSDeepCrawlStrategy):
                         break  # Exit the generator
                     
                     new_links: List[Tuple[str, Optional[str]]] = []
-                    await self.link_discovery(result, url, depth, visited, new_links, depths)
+                    effective_source = getattr(result, "redirected_url", None) or url
+                    await self.link_discovery(result, effective_source, depth, visited, new_links, depths)
                     for new_url, new_parent in reversed(new_links):
                         new_depth = depths.get(new_url, depth + 1)
                         stack.append((new_url, new_parent, new_depth))

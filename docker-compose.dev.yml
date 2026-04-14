@@ -1,35 +1,54 @@
-# docker-compose.dev.yml — Development override
-#
-# Mounts your local source into the running container so changes to
-# crawl4ai/ and deploy/docker/ are reflected without rebuilding the image.
-#
-# Usage (first time — build image once, then start with mounts):
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
-#
-# After that (code changes only — no rebuild needed):
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
-#
-# Restart server after changes (gunicorn picks up new code):
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml restart crawl4ai
+version: '3.8'
+
+# Shared configuration for all environments
+x-base-config: &base-config
+  ports:
+    - "11235:11235"              # Gunicorn / FastAPI
+
+  env_file:
+    - .llm.env       # API keys (create from .llm.env.example)
+  # Uncomment to set default environment variables (will overwrite .llm.env)
+  # environment:
+  #   - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+  #   - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+  #   - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+  #   - GROQ_API_KEY=${GROQ_API_KEY:-}
+  #   - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+  #   - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+  #   - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+  #   - LLM_PROVIDER=${LLM_PROVIDER:-}  # Optional: Override default provider (e.g., "anthropic/claude-3-opus")
+  volumes:
+    - /dev/shm:/dev/shm  # Chromium shared memory (host /dev/shm = ~47GB on this machine)
+    - ./deploy/docker/supervisord.conf:/app/supervisord.conf  # Fixed: Redis uses /var/lib/redis, no RDB snapshots
+  deploy:
+    resources:
+      limits:
+        memory: 4G      # 4GB machine — leave ~6GB headroom for OS/kernel
+        cpus: '2'       # 2 core machine — leave 2 cores for OS scheduling
+      reservations:
+        memory: 2G
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40s
+  user: "appuser"
 
 services:
   crawl4ai:
+    # 1. Default: Pull multi-platform test image from Docker Hub
+    # 2. Override with local image via: IMAGE=local-test docker compose up
+    image: ${IMAGE:-unclecode/crawl4ai:${TAG:-latest}}
+    
+    # Local build config (used with --build)
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        USE_LOCAL: "true"          # install from ./  at build time
-
-    environment:
-      # Prepend the repo root so Python finds ./crawl4ai before site-packages
-      PYTHONPATH: /local
-
-    volumes:
-      - /dev/shm:/dev/shm          # Chromium shared memory (required)
-
-      # Local repo root  →  /local  (makes  `import crawl4ai`  use your source)
-      - .:/local:ro
-
-      # Server code  →  /app  (api.py, server.py, job.py, schemas.py, etc.)
-      # Changes here are live after a container restart.
-      - ./deploy/docker:/app
+        INSTALL_TYPE: ${INSTALL_TYPE:-default}
+        ENABLE_GPU: ${ENABLE_GPU:-false}
+    
+    # Inherit shared config
+    <<: *base-config

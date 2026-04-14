@@ -1,0 +1,109 @@
+[
+  {
+    "url": "https://www.lancewoodcapital.com/",
+    "success": false,
+    "error_message": "Unexpected error in _crawl_web at line 778 in _crawl_web (crawl4ai/async_crawler_strategy.py):\nError: Failed on navigating ACS-GOTO:\nPage.goto: net::ERR_CONNECTION_TIMED_OUT at https://www.lancewoodcapital.com/\nCall log:\n  - navigating to \"https://www.lancewoodcapital.com/\", waiting until \"domcontentloaded\"\n\n\nCode context:\n 773                                   tag=\"GOTO\",\n 774                                   params={\"url\": url},\n 775                               )\n 776                               response = None\n 777                           else:\n 778 \u2192                             raise RuntimeError(f\"Failed on navigating ACS-GOTO:\\n{str(e)}\")\n 779   \n 780                       # \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n 781                       # Walk the redirect chain.  Playwright returns only the last\n 782                       # hop, so we trace the `request.redirected_from` links until the\n 783                       # first response that differs from the final one and surface its",
+    "status_code": null,
+    "redirected_url": null,
+    "redirected_status_code": null,
+    "cache_status": null,
+    "response_headers": {},
+    "ssl_certificate": null,
+    "dispatch_result": {
+      "task_id": "3edd18ca-7004-4cee-b3ac-5eaaab6373aa",
+      "memory_usage": -37.109375,
+      "peak_memory": -37.109375,
+      "start_time": 1775928982.864074,
+      "end_time": 1775929058.9176881,
+      "error_message": "Unexpected error in _crawl_web at line 778 in _crawl_web (crawl4ai/async_crawler_strategy.py):\nError: Failed on navigating ACS-GOTO:\nPage.goto: net::ERR_CONNECTION_TIMED_OUT at https://www.lancewoodcapital.com/\nCall log:\n  - navigating to \"https://www.lancewoodcapital.com/\", waiting until \"domcontentloaded\"\n\n\nCode context:\n 773                                   tag=\"GOTO\",\n 774                                   params={\"url\": url},\n 775                               )\n 776                               response = None\n 777                           else:\n 778 \u2192                             raise RuntimeError(f\"Failed on navigating ACS-GOTO:\\n{str(e)}\")\n 779   \n 780                       # \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n 781                       # Walk the redirect chain.  Playwright returns only the last\n 782                       # hop, so we trace the `request.redirected_from` links until the\n 783                       # first response that differs from the final one and surface its"
+    },
+    "network_requests": null,
+    "console_messages": null,
+    "tables": [],
+    "crawl_stats": null,
+    "markdown": {
+      "raw_markdown": ""
+    },
+    "media": {},
+    "links": {},
+    "metadata": {
+      "depth": 0,
+      "parent_url": null
+    },
+    "rank_factors": {
+      "investment_criteria_field_score": 0.0,
+      "financial_data_density_score": 0.0,
+      "business_context_score": 0.0,
+      "investment_focused_url_score": 2.0,
+      "investment_information_density_score": 0.0,
+      "financial_metrics_detection_score": 0.0,
+      "enhanced_depth_penalty_score": 20.0,
+      "url_structure_score": 25.0,
+      "content_quality_score": 0.0,
+      "page_type_score": 12.0,
+      "geographic_relevance_score": 0.0,
+      "url_quality_bonus": 0.0,
+      "base_total_score": 59.0,
+      "investment_criteria_breakdown": {
+        "universal_criteria_found": [],
+        "debt_criteria_found": [],
+        "equity_criteria_found": [],
+        "total_criteria_count": 0
+      },
+      "financial_data_breakdown": {
+        "deal_size_mentions": 0,
+        "loan_term_mentions": 0,
+        "interest_rate_mentions": 0,
+        "return_mentions": 0,
+        "timeline_mentions": 0,
+        "total_financial_mentions": 0
+      },
+      "business_context_breakdown": {
+        "capital_positions_found": [],
+        "property_types_found": [],
+        "strategies_found": [],
+        "loan_programs_found": [],
+        "loan_types_found": [],
+        "recourse_loans_found": [],
+        "structured_tranches_found": []
+      },
+      "url_analysis": {
+        "depth": 0,
+        "is_investment_focused": true,
+        "investment_keywords_in_url": [
+          "capital"
+        ],
+        "url_quality_indicators": []
+      },
+      "matched_keywords": {
+        "universal_criteria": [],
+        "debt_criteria": [],
+        "equity_criteria": [],
+        "capital_positions": [],
+        "property_types": [],
+        "strategies": [],
+        "loan_programs": [],
+        "loan_types": [],
+        "recourse_loans": [],
+        "structured_tranches": [],
+        "investment_url_kw": [
+          "capital"
+        ],
+        "geo_regions": [],
+        "geo_states": []
+      },
+      "cre_ranking": {
+        "cre_keyword_score": 0.0,
+        "cre_content_type_score": 0.0,
+        "cre_investment_info_score": 0.0,
+        "cre_property_focus_score": 0.0,
+        "cre_financial_terms_score": 0.0,
+        "non_cre_penalty": 0.0,
+        "cre_page_type": "general",
+        "cre_keywords_found": [],
+        "cre_content_indicators": []
+      },
+      "total_score": 23.6
+    }
+  }
+]

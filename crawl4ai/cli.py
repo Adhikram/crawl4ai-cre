@@ -166,7 +166,7 @@ async def _apply_cre_redirect_discovery(
     strategy,
     verbose: bool,
     allow_news: bool = False,
-) -> None:
+) -> str:
     """
     Async pre-flight: resolve redirect chain for *url*, build a
     :class:`CREDomainScopingFilter` that covers www/non-www variants and all
@@ -179,6 +179,12 @@ async def _apply_cre_redirect_discovery(
 
     Args:
         allow_news: When True, news/blog URLs are not filtered out.
+
+    Returns:
+        The resolved final URL (e.g. ``https://www.barings.com/guest`` when the
+        seed ``https://www.barings.com`` redirects there).  Falls back to the
+        original *url* on any error so the caller can always use the return value
+        as the crawl seed URL.
     """
     try:
         from crawl4ai.deep_crawling.cre_redirect import discover_all_redirect_domains
@@ -209,12 +215,17 @@ async def _apply_cre_redirect_discovery(
 
         if verbose:
             news_label = "news included" if allow_news else "CRENews"
+            redirect_note = (
+                f" (redirected from {url})" if rr.final_url != url else ""
+            )
             click.echo(
-                f"[CRE] ✅ Final URL : {rr.final_url}\n"
+                f"[CRE] ✅ Final URL : {rr.final_url}{redirect_note}\n"
                 f"[CRE] 🌐 All domains: {sorted(rr.all_domains)}\n"
                 f"[CRE] 🔗 Filter chain patched on {type(strategy).__name__} "
                 f"(CREValidPage → CREDomainScoping → {news_label})"
             )
+
+        return rr.final_url
 
     except ImportError as ie:
         if verbose:
@@ -223,6 +234,8 @@ async def _apply_cre_redirect_discovery(
         # Non-fatal – fall back to the synchronous filter already set
         if verbose:
             click.echo(f"[CRE] ⚠ Redirect discovery failed: {exc} — using base-domain filter only")
+
+    return url
 
 
 async def run_crawler(
@@ -253,10 +266,12 @@ async def run_crawler(
     # CRE redirect discovery — runs once before the first page is fetched.
     # This works for all three strategies (BFS / DFS / BestFirst) because they
     # all expose self.filter_chain with the same interface.
+    # The returned final_url replaces the original seed so that path-level
+    # redirects (e.g. barings.com → barings.com/guest) are honoured.
     if cre_options and cre_options.get("redirect_discovery"):
         strategy = getattr(crawler_cfg, "deep_crawl_strategy", None)
         if strategy is not None:
-            await _apply_cre_redirect_discovery(
+            url = await _apply_cre_redirect_discovery(
                 url, strategy, verbose,
                 allow_news=cre_options.get("allow_news", False),
             )

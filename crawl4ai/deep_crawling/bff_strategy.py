@@ -379,7 +379,8 @@ class BestFirstCrawlingStrategy(DeepCrawlStrategy):
                 if result.success and not _is_challenge:
                     # Discover new links from this result
                     new_links: List[Tuple[str, Optional[str]]] = []
-                    await self.link_discovery(result, result_url, depth, visited, new_links, depths)
+                    effective_source = getattr(result, "redirected_url", None) or result_url
+                    await self.link_discovery(result, effective_source, depth, visited, new_links, depths)
                     
                     for new_url, new_parent in new_links:
                         new_depth = depths.get(new_url, depth + 1)
